@@ -208,7 +208,7 @@ reads are **not** deleted: validation deletes `today − WINDOW` and older only.
 | 11.1 the log and the partitions are the store | the Kafka topic (retention ≥ window) and `OMS_RAW` intraday/historical partitions |
 | 11.2 the DIS is a writer only | yes: three in-worker DISes, one per system, plus one for `OMS_TRACE` |
 | 11.3 "a PQ is needed to read persisted data" | any worker, console or client reads `db.live_table` / `db.historical_table`; PQs are for work that must survive sessions |
-| 11.4 `oms.pending_c` user table keyed on `b_ref_id` | `links_c.where("ParentState != `LINKED`")` — a view over `OrdersC`; no second store |
+| 11.4 `oms.pending_c` user table keyed on `b_ref_id` | `links_cp.where("ParentState != `LINKED`")` — the C parents whose B child has not arrived, a view over `OrdersC`; no second store |
 | 11.4 flush path when B arrives | the `natural_join` modifies the C row in the same cycle (doc 04 §4) |
 | 11.4 reconciliation PQ every 5 minutes | removed; aging is a clock join on the candidate rows (doc 04 §5) |
 | 11.5 memory argument | holds for the raw tables themselves (paged from the DIS) |
