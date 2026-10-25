@@ -16,7 +16,9 @@ Phased delivery of docs 02–09, with the module layout, what is reused from the
 | **M4 Scale and hardening** | full-day UAT run at agreed volume; doc 06 gates evaluated; shard PQs and collector only if a gate trips; runbooks R1–R7 rehearsed; N6 measured | AC5, AC6, AC8; doc 08 R2 filled | M3 |
 | **M5 Production cutover** | prod PQs, ACLs, dashboards, on-call handover; `trace_check` report attached | one week of prod with no unexplained alerts | M4 |
 
-M1 can start immediately: nothing in it needs Enterprise or the final answers.
+M1 can start immediately: nothing in it needs Enterprise or the final answers, and the fix42
+repo's `order_tree_recon` module already runs this exact five-level topology, so the first
+prototype is five adapter views plus the chain's mock book.
 
 ## 2. Repository and module layout
 
@@ -58,7 +60,7 @@ and the version-sensitive surface is one file (doc 07 §10).
 
 | Piece | From | Use |
 |---|---|---|
-| Normalize → index → link → walk → rollup → recon DAG, taxonomy, `TreePath`, tree | `order-tree-recon/src/order_tree_recon/{dag,config,reference}.py` (doc 14) | the generic path of doc 04 §8 for the prototype and the UI slice; the production edge DAG is a specialization written in `oms_trace.dag` |
+| Normalize → index → link → walk → rollup → recon DAG, taxonomy, `TreePath`, tree — **whose default topology is this chain** (client / algo parent / algo child / router parent / router child = `A_ROOT` / `B_PARENT` / `B_CHILD` / `C_PARENT` / `C_CHILD`) | `order-tree-recon/src/order_tree_recon/{dag,config,reference,mockdata}.py` (doc 14) | the M1 prototype runs it with five adapter views and nothing else (doc 04 §8); the production edge DAG in `oms_trace.dag` is a specialization that adds the window, aging, cardinality checks and native-id joins |
 | Reference-oracle + embedded-engine test harness, `faulthandler` handling | `order-tree-recon/tests`, `run_tests.sh` | L1/L2 scaffolding |
 | Pre-flight feed check pattern | `fixstate_check.py` | `trace_check.py` |
 | `deephaven.ui` dashboard patterns (uncontrolled inputs, row-press pinning, breaks-only) | `order-tree-recon/dashboard.py` (doc 14 §7) | `dashboard.py` |
@@ -70,7 +72,7 @@ and the version-sensitive surface is one file (doc 07 §10).
 
 | # | Task | Size | Milestone |
 |---|---|---|---|
-| 1 | `config`, `adapters`, `sources(mock)`, `mockdata` scenario catalog | M | M1 |
+| 1 | `config`, `adapters` (five levels, role split on `ParentOrderId`), `sources(mock)`, `mockdata` scenario catalog (start from doc 14's five-level mock book) | M | M1 |
 | 2 | `reference.py` oracle + L1 tests for every scenario and the identities | M | M1 |
 | 3 | `dag.py` production edge DAG + L2 equality tests + live healing tests | L | M1 |
 | 4 | Community compose, `app.py`, file/kafka sources, `run_demo.sh` | M | M1 |

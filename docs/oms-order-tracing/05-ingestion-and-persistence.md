@@ -95,7 +95,8 @@ TOPIC  = os.environ.get("OMS_TOPIC", f"oms.{SYSTEM.lower()}.orders")
 TZ     = os.environ.get("OMS_TRACE_TZ", "America/New_York")
 
 value_def = TableDefinition({
-    "OrderId": dt.string, "UpstreamRef": dt.string, "Symbol": dt.string, "Side": dt.string,
+    "OrderId": dt.string, "UpstreamRef": dt.string, "ParentOrderId": dt.string,   # ParentOrderId: in-system parent, null on parents
+    "Symbol": dt.string, "Side": dt.string,
     "OrderQty": dt.long, "CumQty": dt.long, "LeavesQty": dt.long, "AvgPx": dt.double,
     "OrdStatus": dt.string, "EventTs": dt.Instant, "SeqNo": dt.long,
 })
@@ -121,6 +122,11 @@ opts = kafka_table_writer_options(
 dis = get_dis_by_name(DIS)                    # the DIS from §2; must have private storage
 dis.consume(opts)                             # runs for the life of the PQ
 ```
+
+B's and C's parent and child orders arrive on one topic each (Q18) and land in one table; the
+lineage adapter splits them on `ParentOrderId`. If a system publishes two topics, run two
+`dis.consume` options in the same PQ writing `Orders<X>Parent` / `Orders<X>Child` and let the
+adapter `merge` them.
 
 `RecvTs`, `KafkaPartition` and `KafkaOffset` are supplied by the ingester's built-in
 timestamp/offset columns where the version provides them; otherwise add them through the value

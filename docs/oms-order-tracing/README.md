@@ -21,12 +21,17 @@ Reading order:
 | [09 Testing and validation](09-testing-and-validation.md) | oracle-based tests, scenario catalog, sizing run, pre-cutover validation | build the tests or sign off |
 | [10 Implementation plan](10-implementation-plan.md) | milestones, module layout, reuse from `deephaven-fix42-dashboard`, risks, done | plan the work |
 
-The one-paragraph summary: reconcile **per edge** (parent versus the sum of its direct
-children), treat a child whose parent has not arrived as a **state** that heals when the parent
-lands rather than a buffer to retry, ingest each feed through a **Core+ Kafka ingester with an
+The topology (clarified 2026-10-25): A holds the root order; B holds one parent per root and
+many children; C holds one parent per B child and many children under each — five levels, four
+edges, the same shape as the fix42 repo's doc 14 module.
+
+The one-paragraph summary: reconcile **per edge** on all four edges (parent versus the sum of
+its direct children), treat a child whose parent has not arrived as a **state** that heals when
+the parent lands rather than a buffer to retry, ingest each feed through a **Core+ Kafka ingester with an
 in-worker Data Import Server**, run the whole lineage in **one worker** until a measured gate
-trips, and shard **per edge by the parent's id** when it does. The resolver, the
-Barrage-published mapping table and the pending-buffer PQ of the original design are not needed.
+trips, and shard **per edge by the parent's id** when it does, with root ids flowing down
+between shard families as partitioned maps. The resolver, the Barrage-published mapping table
+and the pending-buffer PQ of the original design are not needed.
 
 Related: [`../git-persistent-query-scripts.md`](../git-persistent-query-scripts.md) (how the
 PQ scripts get from Git to the controller) and the `deephaven-fix42-dashboard` repository's

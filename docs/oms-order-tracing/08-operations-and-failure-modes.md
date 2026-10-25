@@ -14,7 +14,9 @@ Replaces sections 8 and 11.7 of the source document for the design in docs 02–
 | `oms-trace-ui` dies | dashboard down | none | auto-restart; spares optional | PQ status |
 | DIS storage lost / unmounted | ingesters fail to write; lineage reads fail or go stale | the day's intraday partitions on that volume | restore the volume; replay from Kafka for the window (R1 runbook) | storage alerts; PQ errors |
 | Kafka retention shorter than an outage | messages lost before ingestion | those messages | request a re-publish from the OMS; the unresolved/drift tables show what is missing | ingest lag vs retention metric |
-| B (or A) never arrives for a child | child stays `UNRESOLVED`; its quantity is unattributed | none | nothing to recover: it is the finding; alert at `UNRESOLVED_ALERT_SEC`, forensic record in `DriftEvents` | `unresolved_links.Alerted` count |
+| A parent never arrives at any hop (a B child without its B parent, a C parent without its B child, …) | the child stays `UNRESOLVED`; everything below it is `LINKED` with `RootState = UNRESOLVED` and unattributed | none | nothing to recover: it is the finding; alert at `UNRESOLVED_ALERT_SEC`, forensic record in `DriftEvents` | `unresolved_links.Alerted` count; `root_unresolved` size |
+| C has fewer parents than B has children (a B child never reached C) | `MISSING_CHILD` on that `Bc-Cp` row while quantities are zero, `MISSING_DOWNSTREAM` once the B child executes | none | it is the finding | `trace_stats.CParentsMinusBChildren` away from 0 after lag settles |
+| A parent is misfiled as a child (role field empty vs null, Q15) | `NO_LINK` on the parent and an orphaned subtree | none | fix the adapter's role rule (`IS_PARENT` tests null and empty) | `NO_LINK` count by level |
 | C before B by hours | `UNRESOLVED` then heals (doc 04 §4) | none | none | only if past the alert age |
 | Lag longer than the `Date` window | permanently `UNRESOLVED` in the earlier day | none | widen `OMS_TRACE_DATE_WINDOW_DAYS` (restart) | unresolved count by `Date` |
 | Duplicate messages (Kafka redelivery, OMS re-send) | none: last-by keeps the latest state | none | none | — |
@@ -41,6 +43,7 @@ row in `break_events` so it lands in `DriftEvents`). Defaults; tune after the fi
 | Metric | Source | Warn | Page | Dedupe |
 |---|---|---|---|---|
 | Unresolved links older than the alert age | `unresolved_links.where("Alerted")` count per system | > 0 | > 100 or any older than 4 h | one alert per (System, OrderId) crossing; summary every 15 min while non-zero |
+| C parents versus B children | `trace_stats.CParentsMinusBChildren` | ≠ 0 for > 10 min | < −100 (B children never reaching C) | per crossing |
 | Drift quantity by edge | `trace_stats.MissingDownstreamQty<Edge>`, `UnbookedUpstreamQty<Edge>` | > 0 for > 5 min | > threshold agreed with the desks (Q9) | per edge, re-alert on 2× growth |
 | Drift count by symbol | `drift_by_symbol.Breaks` | any new symbol | > 10 symbols | per symbol |
 | Stale system | `now() − max(RecvTs)` per system during market hours | > 60 s | > 5 min | per system |
@@ -119,8 +122,13 @@ unresolved_links.sort_descending(["AgeSec"])
 # a C order's raw history for the day, across the partitions in the window
 db.live_table("OMS_RAW", "OrdersC").where(["Date in `2026-10-25`, `2026-10-24`", "OrderId == `C-00123`"]).sort(["RecvTs"])
 
-# every B order that pointed at a given A order, with its current state
-orders_b.where("LinkId == `A-00042`")
+# the B parent of a given A order, then that parent's B children (RootId is carried on every level)
+links_bp.where("LinkId == `A-00042`")
+links_bc.where("RootId == `A-00042`")
+
+# a whole lineage from any node id: resolve the root through all_links, then the UI slice helper
+root = all_links.where("OrderId == `C-00123`").view(["RootId"])      # one row; read RootId, then
+# nodes, tree = lineage_nodes(["A-00042"])
 
 # break transitions for one node, from the persisted history (yesterday and today)
 db.live_table("OMS_TRACE", "DriftEvents").where(["Date in `2026-10-25`, `2026-10-24`", "System == `B`", "OrderId == `B-00777`"]).sort(["Ts"])

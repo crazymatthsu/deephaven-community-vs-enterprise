@@ -1,9 +1,10 @@
 # 03 — Data model and contracts
 
-Table names, column names, types and formulas for the design in doc 02. This document is
-**binding** for the implementation (doc 10): a deviation updates it in the same change.
-Naming follows Enterprise conventions (`Namespace.TableName`, PascalCase columns) for persisted
-tables, and snake_case Python globals for in-worker tables.
+Table names, column names, types and formulas for the design in doc 02, for the five-level
+topology of doc 01 §1. This document is **binding** for the implementation (doc 10): a
+deviation updates it in the same change. Naming follows Enterprise conventions
+(`Namespace.TableName`, PascalCase columns) for persisted tables, and snake_case Python globals
+for in-worker tables.
 
 ---
 
@@ -12,39 +13,36 @@ tables, and snake_case Python globals for in-worker tables.
 | Namespace | Kind | Written by | Read by | Holds |
 |---|---|---|---|---|
 | `OMS_RAW` | system namespace | the three ingester PQs (each DIS claims its table) | `oms-lineage`, ops, forensics | `OrdersA`, `OrdersB`, `OrdersC` (intraday → historical) |
-| `OMS_TRACE` | system namespace | `oms-drift-writer` (DTW) and the EOD snapshot step | desks, ops, reports | `DriftEvents`, `DailyDriftSummary` |
+| `OMS_TRACE` | system namespace | `oms-drift-writer` (DTW) and the EOD snapshot | desks, ops, reports | `DriftEvents`, `DailyDriftSummary` |
 | `oms_trace_dev` | user namespace | developers | developers | scratch snapshots during P0/P1 |
-
-System-namespace schemas are deployed with `dhconfig schema import` and owned by the platform
-team; the user namespace is created by the first `add_partitioned_table_schema` call (doc 05
-§8).
 
 ## 2. Raw per-system tables — `OMS_RAW.OrdersA`, `OrdersB`, `OrdersC`
 
-One row per message as received (append-only within a partition). Same schema for all three;
-`UpstreamRef` is null on A.
+One row per message as received (append-only within a partition). The same schema for all
+three; `OrdersB` and `OrdersC` hold **both** parent and child orders, told apart by
+`ParentOrderId` (A11, Q15).
 
 | Column | Type | Null | Meaning |
 |---|---|---|---|
 | `Date` | String (partitioning) | no | trading date the ingester assigned from `RecvTs` (A10) |
-| `OrderId` | String | no | the system's own order id (A1) |
-| `UpstreamRef` | String | A: null; B, C: no | B → the A order id; C → the B order id |
+| `OrderId` | String | no | the system's own order id, unique across parents and children (A1) |
+| `UpstreamRef` | String | A: null; B parent: the A id; C parent: the B child id; children: null unless the feed copies it (Q16) | the **cross-system** reference |
+| `ParentOrderId` | String | parents: null or empty; children: the parent's `OrderId` in the same system | the **in-system** reference; its presence makes the row a child |
 | `Symbol` | String | no | as sent; normalized in the adapter view if A7 fails |
-| `Side` | String | no | as sent (`BUY`/`SELL` or FIX codes); normalized in the adapter |
+| `Side` | String | no | as sent; normalized in the adapter |
 | `OrderQty` | long | no | order quantity |
 | `CumQty` | long | no | cumulative executed quantity — the value reconciled |
 | `LeavesQty` | long | yes | open quantity, when the feed has it (Q14) |
-| `AvgPx` | double | yes | optional; for a later notional view |
-| `OrdStatus` | String | yes | the system's status (needed to read a canceled parent) |
+| `AvgPx` | double | yes | optional |
+| `OrdStatus` | String | yes | the system's status |
 | `EventTs` | Instant | yes | the OMS's event time |
 | `RecvTs` | Instant | no | the ingester's receive time; used for aging (Q12) |
 | `SeqNo` | long | yes | a per-order sequence from the feed, if any (A8) |
 | `KafkaPartition` | int | no | provenance |
-| `KafkaOffset` | long | no | provenance; with `KafkaPartition` it identifies the message |
+| `KafkaOffset` | long | no | provenance |
 
 Enterprise schema sketch (one per table; confirm attribute names against the installed
-version's schema reference and generate from a prototype `TableDefinition` where the tooling
-allows):
+version's schema reference):
 
 ```xml
 <Table namespace="OMS_RAW" name="OrdersB" storageType="NestedPartitionedOnDisk" defaultMergeFormat="DeephavenV1">
@@ -52,6 +50,7 @@ allows):
   <Column name="Date"           dataType="String"  columnType="Partitioning"/>
   <Column name="OrderId"        dataType="String"  columnType="Grouping"/>
   <Column name="UpstreamRef"    dataType="String"/>
+  <Column name="ParentOrderId"  dataType="String"/>
   <Column name="Symbol"         dataType="String"/>
   <Column name="Side"           dataType="String"/>
   <Column name="OrderQty"       dataType="long"/>
@@ -67,70 +66,80 @@ allows):
 </Table>
 ```
 
-`OrderId` is a grouping column so historical point lookups ("show me this order's day") read
-one group, not the partition.
+If B or C publish parents and children on two topics (Q18), they land in two tables
+(`OrdersBParent`, `OrdersBChild`) and the adapter `merge`s them before `last_by`; nothing else
+changes.
 
 ## 3. The adapter contract (canonical node columns)
 
-The lineage DAG never reads `OMS_RAW` columns directly; one `view` per system maps them onto
-this contract (doc 04 §1). It is the only code that changes when a feed changes.
+The lineage DAG never reads `OMS_RAW` columns directly. One `where` + `view` per **level**
+maps them onto this contract (doc 04 §1). It is the only code that changes when a feed changes.
 
 | Column | Type | Rule |
 |---|---|---|
-| `System` | String | `A`, `B` or `C` (constant per adapter) |
+| `Level` | String | `A_ROOT`, `B_PARENT`, `B_CHILD`, `C_PARENT`, `C_CHILD` (constant per adapter) |
+| `System` | String | `A`, `B`, `C` |
 | `OrderId` | String | as raw; never null |
-| `LinkId` | String | `UpstreamRef`; `""` at A and whenever raw is null (`isNull(x) ? `` : x`) |
+| `LinkId` | String | the id of the **parent node**: `UpstreamRef` on `B_PARENT` and `C_PARENT`, `ParentOrderId` on `B_CHILD` and `C_CHILD`, `""` on `A_ROOT`; null → `""` |
 | `Symbol`, `Side` | String | normalized to one coding; null → `""` |
 | `OrderQty`, `CumQty` | long | null → `0` |
-| `LeavesQty` | long | null → `0`; `HasLeaves = false` when the feed lacks it |
+| `LeavesQty` | long | null → `0` |
 | `Status` | String | `OrdStatus`, null → `""` |
 | `RecvTs` | Instant | as raw |
 | `Present` | boolean | constant `true`; joined onto children to tell "parent exists" from "parent exists with null columns" |
 
-Nulls are turned into zeros and empty strings here, once, because a null poisons every sum
-above it and `x == ``` is false on null (doc 14 §3's rule).
+Role split rule (A11): `IS_PARENT = isNull(ParentOrderId) || ParentOrderId == ```. Testing null
+**and** empty matters: a JSON feed omits the field, a FIX-derived feed sends it empty, and
+`== ``` alone is false on null (doc 14 §3's rule). A parent misfiled as a child becomes
+`NO_LINK` and orphans its subtree.
 
 ## 4. In-worker lineage tables (`oms-lineage` globals)
 
-### 4.1 Last state per system
+### 4.1 Last state per level
 
-`orders_a`, `orders_b`, `orders_c`: the adapter view of `last_by(["OrderId"])` over the `Date`
-window. One row per order. Columns = §3.
+`a_root`, `b_parent`, `b_child`, `c_parent`, `c_child`: `last_by(["OrderId"])` per raw table
+over the `Date` window, then the role split and the adapter view. One row per node. Columns = §3.
 
-### 4.2 Linked children — `links_b`, `links_c`
+### 4.2 Linked nodes — `links_bp`, `links_bc`, `links_cp`, `links_cc`
 
-Children with their parent's state joined on. One row per B (resp. C) order.
+Each child level with its parent's state joined on and the root carried down. One row per node
+of that level.
 
 | Column | Source |
 |---|---|
-| §3 columns | the child |
+| §3 columns | the node |
 | `ParentPresent` | parent `Present` (null when unresolved) |
 | `ParentCumQty`, `ParentSymbol`, `ParentSide`, `ParentStatus`, `ParentRecvTs` | the parent |
-| `RootId` | B: `LinkId`; C: parent B's `LinkId` (the A id), null while unresolved |
 | `ParentState` | `LinkId == `` ? NO_LINK : isNull(ParentPresent) ? UNRESOLVED : LINKED` |
-| `UnresolvedSince` | `ParentState == UNRESOLVED ? RecvTs : null` — the child's own first receive time is the earliest the gap was knowable |
+| `RootId` | `B_PARENT`: `LinkId` (the A id, known even before A arrives); other levels: the parent's `RootId` (null while any hop above is missing) |
+| `RootState` | `isNull(RootId) ? UNRESOLVED : RESOLVED` |
+| `UnresolvedSince` | `ParentState == UNRESOLVED ? RecvTs : null` |
 
-### 4.3 Edges — `edge_ab`, `edge_bc`
+`a_root` carries `RootId = OrderId`, `RootState = RESOLVED`, `ParentState = ROOT`.
 
-Parents with the rollup of their direct children. One row per A (resp. B) order.
+### 4.3 Edges — `edge_a_bp`, `edge_bp_bc`, `edge_bc_cp`, `edge_cp_cc`
+
+Parents with the rollup of their direct children. One row per parent node.
 
 | Column | Formula |
 |---|---|
-| §3 columns | the parent |
-| `ChildCount` | `count` of children by `LinkId = parent OrderId` (null → 0) |
+| §3 columns, `RootId`, `RootState` | the parent (from its `links_*` table; `a_root` for the first edge) |
+| `ChildCount` | `count` of children with `LinkId = parent OrderId` (null → 0) |
 | `ChildCumQty` | `sum(CumQty)` over direct children (null → 0) |
 | `ChildLastTs` | `max(RecvTs)` over direct children |
 | `FillGap` | `CumQty − ChildCumQty` (long) |
 | `LastChangeTs` | `max(RecvTs, ChildLastTs)` |
-| `Edge` | constant `AB` or `BC` |
-| `RootId` | AB: `OrderId`; BC: `LinkId` (the A id) |
+| `Edge` | `A-Bp`, `Bp-Bc`, `Bc-Cp`, `Cp-Cc` |
+| `Scope` | `CROSS` (`A-Bp`, `Bc-Cp`) or `INTERNAL` (`Bp-Bc`, `Cp-Cc`) |
+| `ExpectOne` | `true` on `A-Bp` and `Bc-Cp` (A4) — configuration, not code |
 
-A parent with no children yet has `ChildCount = 0` and `FillGap = CumQty`: it is a gap
-(the downstream has nothing) and ages like any other.
+A parent with no children yet has `ChildCount = 0` and `FillGap = CumQty`: it is a gap (the
+downstream has nothing) and ages like any other.
 
 ### 4.4 Aged gaps — `gaps`
 
-`merge([edge_ab, edge_bc]).where("FillGap != 0")` joined with the clock (doc 04 §5):
+`merge([edge_*]).where("FillGap != 0 || (ExpectOne && ChildCount != 1)")` joined with the
+clock (doc 04 §5):
 
 | Column | Formula |
 |---|---|
@@ -138,22 +147,22 @@ A parent with no children yet has `ChildCount = 0` and `FillGap = CumQty`: it is
 | `GapAgeSec` | `diffNanos(LastChangeTs, Now) / SECOND` |
 | `BreakKind` | §6 |
 | `IsDrift` | `BreakKind` is a red kind |
+| `ShortSide` | `FillGap > 0 ? CHILD : PARENT` — which book is short |
+| `MissedBy` | the system whose book is short: `CROSS` edges: `CHILD` → the child level's system, `PARENT` → the parent level's system; `INTERNAL` edges: the system itself |
 
 ### 4.5 Outputs
 
 | Table | Grain | Columns |
 |---|---|---|
-| `drift_edges` | one row per parent with an aged non-zero gap | `Edge`, `System`, `OrderId`, `RootId`, `Symbol`, `Side`, `Status`, `OrderQty`, `CumQty`, `ChildCount`, `ChildCumQty`, `FillGap`, `GapAgeSec`, `BreakKind`, `MissedBy` |
-| `drift_by_a_order` | one row per root A order with any aged gap below it | `RootId`, `Symbol`, `Side`, `ACumQty`, `SumBCumQty`, `SumCCumQty`, `GapAB`, `SumGapBC`, `MissingAtB = max(GapAB, 0)`, `MissingAtC = max(SumGapBC, 0)`, `UnbookedAtA = max(−GapAB, 0)`, `UnbookedAtB = max(−SumGapBC, 0)`, `Breaks` |
-| `drift_by_symbol` | one row per `Symbol`, `Side`, `Edge` | `Breaks` (parents with aged drift), `ParentCumQty`, `ChildCumQty`, `MissingDownstream = Σ max(FillGap, 0)`, `UnbookedUpstream = Σ max(−FillGap, 0)` |
-| `unresolved_links` | one row per child with `ParentState != LINKED` | `System`, `OrderId`, `LinkId`, `ParentState`, `Symbol`, `Side`, `CumQty`, `Status`, `UnresolvedSince`, `AgeSec`, `Alerted = AgeSec >= threshold` |
-| `break_events` | **blink**: one row per node whose `BreakKind` or `ParentState` changed this cycle | `Ts`, `System`, `OrderId`, `RootId`, `Edge`, `From`, `To`, `FillGap`, `GapAgeSec` |
-| `trace_stats` | one row | per system: `Orders`, `Unresolved`, `UnresolvedAlerted`, `MaxUnresolvedAgeSec`; per edge: `Gaps`, `Drift`, `MissingDownstreamQty`, `UnbookedUpstreamQty`; `LastUpdate`, `WindowDates` |
-| `trace_nodes` | UI only, over a **selection**: one row per node of the selected lineages | §3 columns + `NodeKey`, `ParentKey`, `RootId`, `Depth`, `FillGap`, `BreakKind` |
+| `drift_edges` | one row per parent with an aged break | `Edge`, `Scope`, `Level`, `System`, `OrderId`, `RootId`, `RootState`, `Symbol`, `Side`, `Status`, `OrderQty`, `CumQty`, `ChildCount`, `ChildCumQty`, `FillGap`, `GapAgeSec`, `BreakKind`, `ShortSide`, `MissedBy` |
+| `drift_by_a_order` | one row per root with any aged break below it | `RootId`, `Symbol`, `Side`, `ACumQty`, `StreetCumQty` (Σ `C_CHILD` cum under the root), `GapABp`, `SumGapBpBc`, `SumGapBcCp`, `SumGapCpCc`, `MissingAtB = max(GapABp, 0)`, `UnbookedAtA = max(−GapABp, 0)`, `InternalB = SumGapBpBc` (signed), `MissingAtC = max(SumGapBcCp, 0)`, `UnbookedAtB = max(−SumGapBcCp, 0)`, `InternalC = SumGapCpCc` (signed), `Breaks` |
+| `drift_by_symbol` | one row per `Symbol`, `Side`, `Edge` | `Breaks`, `ParentCumQty`, `ChildCumQty`, `MissingDownstream = Σ max(FillGap, 0)`, `UnbookedUpstream = Σ max(−FillGap, 0)` |
+| `unresolved_links` | one row per node with `ParentState != LINKED` | `Level`, `System`, `OrderId`, `LinkId`, `ParentState`, `Symbol`, `Side`, `CumQty`, `Status`, `UnresolvedSince`, `AgeSec`, `Alerted = AgeSec >= threshold` |
+| `root_unresolved` | nodes `LINKED` but `RootState = UNRESOLVED` | `Level`, `System`, `OrderId`, `LinkId`, `CumQty` — informational; the alert is on the unresolved node above |
+| `break_events` | **blink**: one row per node whose `BreakKind` or `ParentState` changed this cycle | `Ts`, `Level`, `System`, `OrderId`, `RootId`, `Edge`, `From`, `To`, `FillGap`, `GapAgeSec` |
+| `trace_stats` | one row | per level: `Nodes`, `Unresolved`, `UnresolvedAlerted`, `MaxUnresolvedAgeSec`, `LastUpdate`; per edge: `Gaps`, `Drift`, `MissingDownstreamQty`, `UnbookedUpstreamQty`; `BChildren`, `CParents`, `CParentsMinusBChildren` (the 1 : 1 check as a count); `WindowDates`; cycle time |
+| `trace_nodes` | UI only, over a **selection**: one row per node of the selected roots, all five levels | §3 columns + `NodeKey`, `ParentKey`, `RootId`, `Depth`, `FillGap`, `BreakKind` |
 | `trace_tree` | `trace_nodes.tree("NodeKey", "ParentKey", promote_orphans=True)` | |
-
-`MissedBy` names the system the shares are missing from: on edge AB a positive gap → `B`, on
-BC → `C`; a negative gap → the parent's system (`A` or `B`) has not booked them.
 
 ## 5. Persisted derived tables — `OMS_TRACE`
 
@@ -163,70 +172,67 @@ BC → `C`; a negative gap → the parent's system (`A` or `B`) has not booked t
 |---|---|
 | `Date` | String (partitioning) |
 | `Ts` | Instant |
-| `System`, `OrderId`, `RootId`, `Edge` | String |
+| `Level`, `System`, `OrderId`, `RootId`, `Edge` | String |
 | `From`, `To` | String (the `BreakKind` / `ParentState` before and after) |
 | `FillGap` | long |
 | `GapAgeSec` | long |
 
-This is the forensic record the source doc wanted from the pending buffer: when a C became
-unresolved, when it linked, when a gap became drift, when it closed.
-
 ### 5.2 `DailyDriftSummary` (one partition per day, written at EOD by `add_table_partition`)
 
-`drift_by_symbol` and `drift_by_a_order` as of the lineage PQ's last cycle before its daily
-restart, plus `trace_stats`. Lets reports ask "what did B miss on 2026-10-24" without
-replaying.
+`drift_by_symbol`, `drift_by_a_order` and `trace_stats` as of the lineage PQ's last cycle
+before its daily restart, with a `Kind` column.
 
 ## 6. Break taxonomy and attribution
 
 Evaluated per parent row (edges) and per child row (links), first match wins. Red kinds are
-drift; amber are informational.
+drift; amber are structural or informational.
 
 | `BreakKind` | Applies to | Condition | Meaning / attribution | Colour |
 |---|---|---|---|---|
-| `NO_LINK` | child | `LinkId == ``` on a B or C row | the upstream system never stamped the parent id; the child's quantity is unattributable | red |
+| `NO_LINK` | child | `LinkId == ``` on a non-root level | the parent id was never stamped; the node's quantity is unattributable | red |
 | `UNRESOLVED` | child | `LinkId` set, no parent found | parent not arrived (R8) or never will (R9); alert on age | amber → red at alert age |
+| `ROOT_UNRESOLVED` | child | `LINKED` but `RootId` null | a hop above is missing; shown, not alerted here | amber |
 | `MISMATCH` | child | `Symbol != ParentSymbol || Side != ParentSide` | a child working the wrong instrument or direction | red |
-| `OVERFILL` | any | `CumQty > OrderQty` | executed beyond order size in that system | red |
+| `OVERFILL` | any | `CumQty > OrderQty` | executed beyond order size in that book | red |
+| `CARDINALITY` | parent on an `ExpectOne` edge | `ChildCount > 1`, aged | two B parents for one A, or two C parents for one B child: a re-keyed or duplicated downstream order (R13) | red |
+| `MISSING_CHILD` | parent on an `ExpectOne` edge | `ChildCount == 0`, aged, `CumQty == 0` | the downstream never created its order; no quantity gap yet | amber |
 | `TRANSIENT` | parent | `FillGap != 0` and `GapAgeSec < AGE_SEC` | propagation lag, not drift (R6) | none |
-| `MISSING_DOWNSTREAM` | parent | `FillGap > 0`, aged | the children's system is missing `FillGap` shares the parent executed: **dropped executions at B (edge AB) or C (edge BC)** | red |
-| `UNBOOKED_UPSTREAM` | parent | `FillGap < 0`, aged | children executed more than the parent shows: **the parent's system has not booked them** (A on edge AB, B on edge BC) | red |
+| `MISSING_DOWNSTREAM` | parent | `FillGap > 0`, aged | the children's book is short by `FillGap`: on `A-Bp` → **B dropped executions**; `Bp-Bc` → **B's child book is short against its own parent**; `Bc-Cp` → **C dropped executions**; `Cp-Cc` → **C's child book is short** | red |
+| `UNBOOKED_UPSTREAM` | parent | `FillGap < 0`, aged | the parent's book is short: `A-Bp` → **A has not booked** what B shows; `Bp-Bc` → **B's parent book lags its children**; `Bc-Cp` → **B has not booked** what C shows; `Cp-Cc` → **C's parent book lags** | red |
 | `NONE` | any | | reconciles | — |
 
-Two identities make the rollups add up (proved in doc 14 §5.3 for the same structure; unit
+The identities that make the rollups add up (doc 14 §5.3 proves the same telescoping; unit
 tested in doc 09): for a root whose every node is linked,
 
 ```
-ACumQty − ΣC CumQty  =  GapAB + Σ GapBC        (telescoping over the tree)
-MissingAtB − UnbookedAtA = GapAB ;  MissingAtC − UnbookedAtB = Σ GapBC
+ACumQty − StreetCumQty = GapABp + Σ GapBpBc + Σ GapBcCp + Σ GapCpCc
+MissingAtB − UnbookedAtA = GapABp        MissingAtC − UnbookedAtB = Σ GapBcCp
+InternalB = Σ GapBpBc                    InternalC = Σ GapCpCc
 ```
 
-so `drift_by_a_order` is exactly the source doc's "the number system A needs to see", with the
-system named.
+So `drift_by_a_order` is the source document's "the number system A needs to see", with the
+system **and the book** named. "Which executions" (R15) is a separate data path (doc 02 §10).
 
 ## 7. Keys, types and null rules
 
 - **Ids stay in their native column type.** Joins use `LinkId = OrderId` per edge; no
-  concatenated `NodeKey` outside `trace_nodes` (D8). If all systems use numeric ids, the
-  schema uses `long` and sizing drops ~5× (doc 06 §1).
-- **Quantities are `long`.** Gaps are exact; `QTY_TOL` exists only for feeds that send
-  fractional quantities (then `double` with a tolerance, as doc 14 does).
+  concatenated `NodeKey` outside `trace_nodes` (D8).
+- **Quantities are `long`.** Gaps are exact; `QTY_TOL` exists only for fractional feeds.
 - **Nulls** are removed at the adapter (§3). A null parent column after a join means "no
   parent", never "parent with null value", because `ParentPresent` is checked first.
-- **Time**: aging uses `RecvTs` (receive time in the ingesters, one clock) rather than
-  `EventTs` (three clocks, Q12). `EventTs` is kept for display and forensics.
-- **`Date`** is assigned by the ingester from `RecvTs` in the configured zone and is the only
-  partitioning column everywhere.
+- **Time**: aging uses `RecvTs`; `EventTs` is kept for display and forensics.
+- **`Date`** is assigned by the ingester from `RecvTs` in the configured zone.
 
 ## 8. Configuration keys referenced by these tables
 
 | Key | Default | Used by |
 |---|---|---|
-| `OMS_TRACE_RAW_NAMESPACE` | `OMS_RAW` | adapters |
-| `OMS_TRACE_OUT_NAMESPACE` | `OMS_TRACE` | drift writer, EOD snapshot |
-| `OMS_TRACE_DATE_WINDOW_DAYS` | `2` | §4.1 window (today, yesterday, plus tomorrow for midnight rollover) |
+| `OMS_TRACE_RAW_NAMESPACE` / `OMS_TRACE_OUT_NAMESPACE` | `OMS_RAW` / `OMS_TRACE` | adapters, writer |
+| `OMS_TRACE_DATE_WINDOW_DAYS` | `2` | §4.1 window (plus tomorrow) |
 | `OMS_TRACE_GAP_AGE_SEC` | `30` | `TRANSIENT` boundary |
 | `OMS_TRACE_UNRESOLVED_ALERT_SEC` | `3600` | `unresolved_links.Alerted` |
 | `OMS_TRACE_CLOCK_SEC` | `30` | the aging clock period |
-| `OMS_TRACE_QTY_TOL` | `0` | tolerance (long quantities) |
+| `OMS_TRACE_QTY_TOL` | `0` | tolerance |
+| `OMS_TRACE_EXPECT_ONE_EDGES` | `A-Bp,Bc-Cp` | the 1 : 1 edges (A4) |
+| `OMS_TRACE_PARENT_ID_COLUMN` | `ParentOrderId` | the in-system parent id column (Q15) |
 | `OMS_TRACE_TZ` | `America/New_York` | `Date` assignment and the daily window |

@@ -12,6 +12,13 @@ parent arrives, and durable, replayable ingestion through a Data Import Server. 
 is ranked by what it costs to leave as is. Every "change" row is carried into docs 01–10 as a
 decision, so this document can be read on its own and the rest as the answer.
 
+**Topology clarification (2026-10-25, after the first pass of this review):** OMS A holds the
+root order; OMS B holds one parent order per root and many child orders; OMS C holds one parent
+per B child (as many C parents as B children) and many child orders under each. Five levels,
+four edges — the Raptor → algo → router shape the fix42 repo's doc 14 module was built for. The
+clarification confirms F1 (fan-out is a fact, not a possibility), tightens F3 (root attribution
+below the B parent needs root ids to flow between shard families), and adds F15.
+
 ---
 
 ## 1. Verdict in one screen
@@ -39,10 +46,11 @@ decision, so this document can be read on its own and the rest as the answer.
    `natural_join` from C to B is null until B arrives and fills in the same update cycle B
    lands; "pending" is a column state (`UNRESOLVED`), not a place. The durable copy of a
    pending C row is the C intraday table the DIS wrote (F2).
-3. If sharding is ever needed, shard **per edge by the parent's id** (A–B by A id, B–C by B
-   id). Every row is routable from its own fields at ingest; no lookup, no root resolution
-   before routing, no cross-shard join. §4.4 of the source doc is the better design and
-   should be the main line (F3).
+3. If sharding is ever needed, shard **per edge by the parent's id** (four edge families).
+   Every row is routable from its own fields at ingest; no lookup, no root resolution before
+   routing, no cross-shard join for reconciliation. Root ids for the two deeper edges flow
+   down between families as partitioned maps, replicated exactly once (doc 06 §4). §4.4 of
+   the source doc is the better design and should be the main line (F3).
 4. Use Enterprise ingestion as it actually works: a Core+ Kafka ingester running an
    in-worker DIS per system (checkpointed offsets, optional persisted lastBy), or the
    logger → tailer → DIS path for binary logs. The DIS does not write binary logs, and a
@@ -81,6 +89,7 @@ decision, so this document can be read on its own and the rest as the answer.
 | F12 | Minor | Clock skew: "diff only comparable snapshots" | §8 | Transient propagation gaps page people | Gaps are aged: a difference counts only when neither side has moved for N seconds (doc 04 §5) |
 | F13 | Minor | `symbol`, `side` "from A (authoritative)" | §3.2 | A child working the wrong instrument is invisible | Compare and flag `MISMATCH` (doc 03 §6) |
 | F14 | Minor | "Mapping table publisher death: resolvers buffer briefly" | §8 | A design dependency that shouldn't exist | Gone with F2 |
+| F15 | Moderate | "Identify exactly which executions were dropped" is not derivable from cumulative-quantity states | §1 goal line | Expectation gap with the business: the design names the edge, the book and the quantity, not the execution | Execution-level diff is a separate, additive data path (doc 01 R15/Q17, doc 02 §10) |
 
 ### F1 — the chain fans out, so diff per edge
 
@@ -138,10 +147,17 @@ chain can instead be sharded on the parent's own id:
 | B–C | `hash(B.OrderId)` | — | `OrderId` | `UpstreamRef` (the B id) | B ⋈ C rollup, C → B link; the root of a C row is its B parent's `UpstreamRef`, in the same shard |
 
 No row needs a lookup to be routed. The B stream is read twice (once per edge sharding),
-which is cheap because it is read from the DIS table, not re-published. `drift_by_a_order`
-combines the A–B gaps (already keyed by A id) with the B–C gaps summed by the B parent's A
-reference — a small aggregate that one collector joins. §4.4 of the source doc is this design
-for the B–C edge; apply it to both edges and it needs no replicated lookup table at all.
+which is cheap because it is read from the DIS table, not re-published. With the clarified five-level chain there are four such families (`A-Bp`, `Bp-Bc`, `Bc-Cp`,
+`Cp-Cc`), and reconciliation stays local in every one of them. What is not local is the **root**
+of the parents in the two deeper families (a `B_CHILD`'s root is its B parent's A reference,
+which lives in the `Bp-Bc` family). Doc 06 §4.2 handles it by having each family publish
+`(child id → RootId)` sliced by the hash the next family shards on — every pair goes to exactly
+one subscriber, so the fleet holds the two spines once, not N copies of a mapping table; a root
+that has not arrived is a null column that fills, not a buffered message. The source doc's §4.4
+is this design for one edge; applied to all four it needs no resolver on the message path and
+no replicated lookup table. (The honest version of the source design — a spine worker holding
+only link columns that publishes roots to root-sharded tree workers — is laid out as the
+alternative in doc 06 §4.5, for the case where whole trees must be local to a shard.)
 
 ### F4 — Barrage replicates, and snapshots cost the producer
 
@@ -187,15 +203,15 @@ Deephaven logs directly, and the Derived Table Writer for persisting derived tab
 
 | § | Note |
 |---|---|
-| 1 | Keep. Add the four open questions in §1 of this review; "100 M unique orders" must get a unit. |
+| 1 | Keep, and write the topology down: five levels, four edges, 1 : 1 at the cross-system hops and 1 : n inside B and C (doc 01 §1). "100 M unique orders" must get a unit (nodes, per day?). "Identify exactly which executions" needs the F15 caveat. |
 | 2 | Replace the diagram with doc 02 §2. Of the six components, three (resolver, mapping publisher, pending-buffer PQ) are removed, one (reconciliation PQ) becomes a filter, and DIS-A/B/C become Kafka-ingester PQs. |
 | 3.1 | Keep, rename to Enterprise column conventions (doc 03 §2). Add `Status` (needed to tell a canceled parent from a lagging one) and the Kafka offset for forensics. |
-| 3.2 | Replace with one row per **node** carrying `ParentKey`, `RootKey`, child rollups and per-edge gaps (doc 03 §4). A "one row per C" view is a filter over it. |
+| 3.2 | Replace with one row per **node** at each of the five levels carrying its parent link, `RootId`, child rollups and per-edge gaps (doc 03 §4). A "one row per C" view is a filter over it. The raw contract needs the in-system parent id column that tells B's and C's parents from their children (doc 03 §2). |
 | 3.3 | The mapping table is a derived, in-worker join index at most; as an audit trail it is `where(ParentState != LINKED)`. Nothing publishes it. |
 | 3.4 | Removed. The §11 arguments for durability apply to `OMS_RAW.OrdersC`, which already exists. |
 | 3.5 | Keep the four outputs; definitions move to per-edge semantics (doc 03 §5–6). |
 | 4 | Replace with doc 06 §4 (edge sharding) and the phase gates in doc 06 §3. §4.4 is the right direction. |
-| 5 | "Do not traverse the tree table at runtime" — agreed, and nobody needs to: two `natural_join`s (C → B, B → A) resolve the root incrementally. |
+| 5 | "Do not traverse the tree table at runtime" — agreed, and nobody needs to: four `natural_join`s, top-down, resolve every node's root incrementally and carry it along (doc 04 §2). |
 | 6 | Keep the pipeline shape; step 2's time filter becomes a `Date`-partition window (F8); step 4's tree is built over merged nodes (F10); step 5's diffs become edge gaps (F1). |
 | 7 | Replace with doc 06 §1. |
 | 8 | Keep every guard; "mapping table publisher death" goes away; "clock skew" becomes gap aging (F12). |
