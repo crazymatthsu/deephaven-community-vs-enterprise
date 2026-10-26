@@ -53,6 +53,7 @@ reached through its B child.
 | R13 | Guard against mis-keyed feeds: validate id mapping on a sample and watch key cardinality (one B parent per A, one C parent per B child) before trusting diffs | §8 | doc 09 §6 |
 | R14 | Survive restarts: every component is a persistent query that recovers from durable state without operator action | §10, §11.7 | doc 07, doc 08 |
 | R15 | Name the **individual executions** that were dropped on a broken edge, not only the edge and the quantity. Execution ids do not survive a hop; **quantity, price and transaction time do** (Q17, answered 2026-10-26), so executions are matched on that key with multiset semantics | §1 ("identify exactly which executions were dropped") | a second data path over execution reports, computed **lazily for broken edges only** (doc 02 §10, doc 04 §10); phase P2b |
+| R16 | Reconcile **open quantity** per edge as well: `RouteGap = LeavesQty − Σ direct children LeavesQty`, so a cancel that did not propagate, an over-routed slice or quantity held at a level is visible next to the executed-quantity gap | Q14 (answered 2026-10-26: `LeavesQty` is available in all three systems) | same rollup, one more sum (doc 03 §4.3, §6); doc 14's `RouteGap` semantics |
 
 ## 3. Non-functional requirements
 
@@ -82,7 +83,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | A4 | Cardinality per §1: `A-Bp` 1 : 1, `Bp-Bc` 1 : n, `Bc-Cp` 1 : 1, `Cp-Cc` 1 : n | the per-edge rule handles any cardinality; the 1 : 1 checks (`CARDINALITY`, `MISSING_CHILD`) become configuration |
 | A5 | A node's parent reference (cross-system or in-system) is **stable** for the life of the order | index every id a parent was ever known by (doc 04 §8, as doc 14 §3 does) |
 | A6 | No level skips a hop (no C parent referencing an A order or a B parent directly) | ordered candidate parents (doc 14 §2) |
-| A7 | Symbol and side use one coding across the three systems, or a mapping exists | normalize in the adapter view |
+| A7 | Symbol and side use one coding across the three systems. *Confirmed 2026-10-26 (Q13).* | — (a mapping in the adapter view, if it ever changes) |
 | A8 | The feeds are Kafka topics keyed by order id; message order within a key is preserved | last-by orders by `SeqNo`/`EventTs` instead of arrival |
 | A9 | Order ids are strings; if all systems use numeric ids, longs are used | sizing changes ~5× (doc 06 §1) |
 | A10 | One trading day is the natural partition | multi-region sessions need a session-date column |
@@ -90,6 +91,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | A12 | A B child and its C parent are 1 : 1 and the C parent carries the B child's id | if the C parent carries the B *parent's* id instead, the `Bc-Cp` edge becomes `Bp-Cp` (1 : n) and B children are reconciled only inside B |
 | A13 | An execution reported on both sides of a hop has the **same quantity, price and transaction time** on both sides, at the configured precision (price to 1e-6, time to the millisecond); its ids differ. *From Q17, 2026-10-26.* | widen the time bucket, or add an as-of match for the residue (doc 04 §10) |
 | A14 | Busts and corrections reference the execution they cancel or replace by **that system's** exec id (`ExecRefId`), and every system reports them | an unpropagated bust shows as an execution-level break, which is the intended reading; a feed without `ExecRefId` cannot net busts and the match keeps the busted fill on that side |
+| A15 | Within one system, a parent order is published before its children on the **same topic** (Q18). This holds across Kafka partitions only when parent and children share a partition key; the design does **not** depend on it (a child before its parent is `UNRESOLVED` and heals), it only reduces transient in-system `UNRESOLVED` states | nothing changes |
 
 ## 5. Explicitly out of scope
 
@@ -129,6 +131,10 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
    and `exec_breaks_by_edge.Unexplained = 0`. With two identical 100-share fills at the same
    price and millisecond and one dropped, the row names both candidate exec ids with
    `Ambiguous = true`.
+10. **AC10 (R16):** Cancel the A order and its B parent (both `LeavesQty = 0`) while one B child
+    still shows 100 open: once aged, `edge_bp_bc` shows `RouteGap = −100`,
+    `BreakKind = CHILD_STILL_OPEN` on the B parent; `drift_by_a_order.OverRoutedQty = 100`. A B
+    parent holding 200 unsliced shares shows `HELD` (amber) and no drift row.
 
 ## 7. Glossary
 
@@ -158,11 +164,11 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | Q8 | Do busts reduce `CumQty` in all systems, reported as a new state? | A3 | yes | OMS teams |
 | Q9 | Who consumes alerts and how? | alert sink | a table plus one HTTP sink | ops |
 | Q10 | Enterprise and Core+ Python versions in prod | API names in docs 04–07 | current Core+ | Deephaven admins |
-| Q11 | Are the topics keyed by order id? Can the producer key by parent id? | doc 06 §4 routing | keyed by order id | feed owners |
+| Q11 | Are the topics keyed by order id? Can the producer key by parent id? | doc 06 §4 routing; **also Q18's ordering intent**: parent-before-child survives only when parent and children share a partition (key = parent id or root id, or a single partition) | keyed by order id | feed owners |
 | Q12 | Clock source per OMS; is `EventTs` comparable? | aging uses `RecvTs` by default | receive time | OMS teams |
-| Q13 | Symbol/side coding per system | A7 | identical | OMS teams |
-| Q14 | Is `LeavesQty` available in all three? | enables an open-exposure view (doc 14's `RouteGap`) | optional | feed owners |
+| Q13 | Symbol/side coding per system. **Answered 2026-10-26: identical across all three** | A7 confirmed; `MISMATCH` compares values as sent | as answered | — |
+| Q14 | Is `LeavesQty` available in all three? **Answered 2026-10-26: yes** | R16: open quantity reconciled per edge (`RouteGap`, `HELD`, `OVER_ROUTED`, `CHILD_STILL_OPEN`, `LEAVES_MISMATCH`) | as answered | — |
 | Q15 | In B and C, which field carries the in-system parent id, and how are parents told from children? **Answered 2026-10-26:** `ParentOrderId`, null on parents, non-null on children | A11; the adapter role split | as answered | — |
 | Q16 | Do B and C children also carry the cross-system reference? **Answered 2026-10-26: no** — children carry `ParentOrderId` only, `UpstreamRef` is null on them | children link and route by `ParentOrderId` alone (already the design); no `ROOT_MISMATCH` cross-check is available; `UpstreamRef` non-null on a child is a contract violation the pre-cutover check reports | as answered | — |
 | Q17 | Is execution-level identification required, and how do executions match across hops? **Answered 2026-10-26:** execution ids are **not** shared across hops; **quantity, price and transaction time are the same** on both sides | R15 in scope (phase P2b); multiset match on `(Qty, Px, TransactTime)` per broken edge (doc 04 §10); precision and jitter measured pre-cutover (doc 09 §6) | as answered | — |
-| Q18 | Are B's (and C's) parent and child orders on one topic or two? | one or two ingesters per system (doc 05 §4) | one topic, role by `ParentOrderId` | feed owners |
+| Q18 | Are B's (and C's) parent and child orders on one topic or two? **Answered 2026-10-26: one topic per system, so the parent is received before its children** | one ingester and one table per system; A15 on what the ordering does and does not guarantee | as answered | — |

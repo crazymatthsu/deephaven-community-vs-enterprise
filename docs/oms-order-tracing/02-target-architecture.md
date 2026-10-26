@@ -137,7 +137,8 @@ reconciliation PQ are gone; the shard workers are a later phase of the same line
    `C_PARENT`. Each join carries the parent's `RootId` down, so every node gets its A root or
    `RootState = UNRESOLVED` (R3, R8).
 4. **Roll up and gap.** On each edge, children are summed by their parent id and joined back:
-   `FillGap = CumQty − ChildCumQty`. The 1 : 1 edges also check `ChildCount` (R4, R13).
+   `FillGap = CumQty − ChildCumQty` and, since every system reports open quantity (Q14),
+   `RouteGap = LeavesQty − ChildLeavesQty`. The 1 : 1 edges also check `ChildCount` (R4, R13, R16).
 5. **Age.** Only rows with a gap or without a parent join a slow clock; a row is `TRANSIENT`
    until neither side has moved for the aging threshold (R6).
 6. **Aggregate.** `drift_by_a_order` (per root, one column per edge), `drift_by_symbol`,
@@ -222,6 +223,8 @@ Query, a managed long-running worker.
 | D8 | Native id columns for joins; synthetic `NodeKey` strings only in UI slices | `System + "|" + OrderId` on 100 M rows | 06 §1 |
 | D9 | Role split on `ParentOrderId` inside the adapter: null = parent, non-null = child (Q15, answered 2026-10-26); an empty string is a `NO_LINK` child, never a silently misfiled parent | separate parent/child tables from the feeds; a role/type column | 03 §3, Q18 |
 | D10 | Python Core+ scripts from Git; a Python reference oracle tested row for row | Groovy; untested formulas | 09, 10 |
+| D12 | Open quantity reconciled per edge too (`RouteGap`): `HELD` amber on in-system edges, `OVER_ROUTED` / `CHILD_STILL_OPEN` red, `LEAVES_MISMATCH` red on the 1 : 1 edges (Q14 answered 2026-10-26) | executed quantity only | 03 §6, 04 §3 |
+| D13 | One topic and one raw table per system, parents and children split by `ParentOrderId` (Q18 answered 2026-10-26); the design does not rely on parent-before-child ordering | two topics / two tables per system | 03 §2, 05 §4 |
 | D11 | Execution-level identification by **multiset match on `(Qty, Px, TransactTime)`**, computed **lazily for parents with an aged gap** (`where_in`), busts netted by `ExecRefId` | matching every execution on every edge (O(executions) heap); matching by exec id (ids do not cross hops, Q17) | 02 §10, 04 §10, 06 §1.5 |
 
 ## 10. Execution-level identification (R15, Q17)
