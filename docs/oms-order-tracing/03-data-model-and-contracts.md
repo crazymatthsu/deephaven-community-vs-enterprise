@@ -26,7 +26,7 @@ three; `OrdersB` and `OrdersC` hold **both** parent and child orders, told apart
 |---|---|---|---|
 | `Date` | String (partitioning) | no | trading date the ingester assigned from `RecvTs` (A10) |
 | `OrderId` | String | no | the system's own order id, unique across parents and children (A1) |
-| `UpstreamRef` | String | A: null; B parent: the A id; C parent: the B child id; children: null unless the feed copies it (Q16) | the **cross-system** reference |
+| `UpstreamRef` | String | A: null; B parent: the A id; C parent: the B child id; **children: null** (Q16, confirmed 2026-10-26) | the **cross-system** reference, carried by parents only |
 | `ParentOrderId` | String | parents: **null**; children: the parent's `OrderId` in the same system (Q15, confirmed 2026-10-26) | the **in-system** reference; non-null makes the row a child |
 | `Symbol` | String | no | as sent; normalized in the adapter view if A7 fails |
 | `Side` | String | no | as sent; normalized in the adapter |

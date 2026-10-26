@@ -108,9 +108,10 @@ topic (or a day of `OMS_RAW` exported to files) and prints, per system:
 
 - rows, distinct `OrderId`, messages per order (expect ≥ 1, median by Q3);
 - `UpstreamRef` null rate (must be ~0 on B and C, 100 % on A);
-- **role split**: parents (null `ParentOrderId`) versus children per system, and the
-  **empty-string `ParentOrderId` count, which must be 0** (the Q15 contract); plus whether
-  children carry `UpstreamRef` too (Q16);
+- **role split**: parents (null `ParentOrderId`) versus children per system; the
+  **empty-string `ParentOrderId` count, which must be 0** (the Q15 contract); and the
+  **non-null `UpstreamRef` count on children, which must be 0** (the Q16 contract: children
+  carry `ParentOrderId` only) — a non-zero count means the feed changed;
 - **resolution rate per hop**: B parents → A ids, B children → B parent ids, C parents → B
   child ids, C children → C parent ids (AC7 ≥ 99.9 % on a complete sample window; lower means
   A5/A6 or an ingestion gap);

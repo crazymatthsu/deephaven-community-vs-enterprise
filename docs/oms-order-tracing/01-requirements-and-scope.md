@@ -154,6 +154,6 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | Q13 | Symbol/side coding per system | A7 | identical | OMS teams |
 | Q14 | Is `LeavesQty` available in all three? | enables an open-exposure view (doc 14's `RouteGap`) | optional | feed owners |
 | Q15 | In B and C, which field carries the in-system parent id, and how are parents told from children? **Answered 2026-10-26:** `ParentOrderId`, null on parents, non-null on children | A11; the adapter role split | as answered | — |
-| Q16 | Do B and C **children** also carry the cross-system reference (a copy of their parent's `UpstreamRef`)? | a free consistency check (`ROOT_MISMATCH`) and a routing option for sharding (doc 06 §4) | no | OMS B / C |
+| Q16 | Do B and C children also carry the cross-system reference? **Answered 2026-10-26: no** — children carry `ParentOrderId` only, `UpstreamRef` is null on them | children link and route by `ParentOrderId` alone (already the design); no `ROOT_MISMATCH` cross-check is available; `UpstreamRef` non-null on a child is a contract violation the pre-cutover check reports | as answered | — |
 | Q17 | Is **execution-level** identification required (R15)? If so, do execution reports cross the hops with a shared id (`ExecID`/`ExecRefID`), or only quantity/price/time? | a second data path (executions) and a set-difference per edge | not in v1 | business owner |
 | Q18 | Are B's (and C's) parent and child orders on one topic or two? | one or two ingesters per system (doc 05 §4) | one topic, role by `ParentOrderId` | feed owners |
