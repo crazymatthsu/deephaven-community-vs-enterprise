@@ -42,7 +42,7 @@ def last_state(table: str):
     # One last_by per raw table (B and C hold two levels each): one row per order.
     return raw(table).last_by(["OrderId"])
 
-IS_PARENT = f"isNull({PARENT_ID}) || {PARENT_ID} == ``"     # null AND empty (doc 03 §3)
+IS_PARENT = f"isNull({PARENT_ID})"     # Q15: null = parent, non-null = child (doc 03 §3)
 
 def canon(level: str, system: str, link: str | None):
     link_expr = "``" if link is None else f"isNull({link}) ? `` : {link}"
@@ -395,5 +395,5 @@ and nothing else.
 4. `natural_join` never throws on duplicate right keys (the adapter `last_by` is in place).
 5. The clock join evaluates only the candidate rows (assert the candidate table size in the
    1 M-node run).
-6. The role split files a row with an empty-string parent id as a parent, and a row with a
-   null one as a parent (both), and never files a parent as a child.
+6. The role split files a null parent id as a parent and any non-null one (an empty string
+   included) as a child; an empty string surfaces as `NO_LINK`, never as a misfiled parent.

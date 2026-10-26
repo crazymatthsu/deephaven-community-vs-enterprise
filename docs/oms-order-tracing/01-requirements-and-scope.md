@@ -85,7 +85,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | A8 | The feeds are Kafka topics keyed by order id; message order within a key is preserved | last-by orders by `SeqNo`/`EventTs` instead of arrival |
 | A9 | Order ids are strings; if all systems use numeric ids, longs are used | sizing changes ~5× (doc 06 §1) |
 | A10 | One trading day is the natural partition | multi-region sessions need a session-date column |
-| A11 | B and C rows carry an **in-system parent id** column (`ParentOrderId`) that is null (or empty) on parent orders and set on child orders; that column alone tells parents from children | a role/type column is used instead (Q15) |
+| A11 | B and C rows carry an **in-system parent id** column (`ParentOrderId`) that is **null on parent orders and non-null on child orders**; that column alone tells parents from children. *Confirmed 2026-10-26 (Q15).* | — |
 | A12 | A B child and its C parent are 1 : 1 and the C parent carries the B child's id | if the C parent carries the B *parent's* id instead, the `Bc-Cp` edge becomes `Bp-Cp` (1 : n) and B children are reconciled only inside B |
 
 ## 5. Explicitly out of scope
@@ -153,7 +153,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | Q12 | Clock source per OMS; is `EventTs` comparable? | aging uses `RecvTs` by default | receive time | OMS teams |
 | Q13 | Symbol/side coding per system | A7 | identical | OMS teams |
 | Q14 | Is `LeavesQty` available in all three? | enables an open-exposure view (doc 14's `RouteGap`) | optional | feed owners |
-| Q15 | **In B and C, which field carries the in-system parent id, and how are parents told from children** (null parent id, a role/type field)? | A11; the adapter role split | `ParentOrderId`, null on parents | OMS B / C |
+| Q15 | In B and C, which field carries the in-system parent id, and how are parents told from children? **Answered 2026-10-26:** `ParentOrderId`, null on parents, non-null on children | A11; the adapter role split | as answered | — |
 | Q16 | Do B and C **children** also carry the cross-system reference (a copy of their parent's `UpstreamRef`)? | a free consistency check (`ROOT_MISMATCH`) and a routing option for sharding (doc 06 §4) | no | OMS B / C |
 | Q17 | Is **execution-level** identification required (R15)? If so, do execution reports cross the hops with a shared id (`ExecID`/`ExecRefID`), or only quantity/price/time? | a second data path (executions) and a set-difference per edge | not in v1 | business owner |
 | Q18 | Are B's (and C's) parent and child orders on one topic or two? | one or two ingesters per system (doc 05 §4) | one topic, role by `ParentOrderId` | feed owners |

@@ -27,7 +27,7 @@ three; `OrdersB` and `OrdersC` hold **both** parent and child orders, told apart
 | `Date` | String (partitioning) | no | trading date the ingester assigned from `RecvTs` (A10) |
 | `OrderId` | String | no | the system's own order id, unique across parents and children (A1) |
 | `UpstreamRef` | String | A: null; B parent: the A id; C parent: the B child id; children: null unless the feed copies it (Q16) | the **cross-system** reference |
-| `ParentOrderId` | String | parents: null or empty; children: the parent's `OrderId` in the same system | the **in-system** reference; its presence makes the row a child |
+| `ParentOrderId` | String | parents: **null**; children: the parent's `OrderId` in the same system (Q15, confirmed 2026-10-26) | the **in-system** reference; non-null makes the row a child |
 | `Symbol` | String | no | as sent; normalized in the adapter view if A7 fails |
 | `Side` | String | no | as sent; normalized in the adapter |
 | `OrderQty` | long | no | order quantity |
@@ -88,10 +88,12 @@ maps them onto this contract (doc 04 §1). It is the only code that changes when
 | `RecvTs` | Instant | as raw |
 | `Present` | boolean | constant `true`; joined onto children to tell "parent exists" from "parent exists with null columns" |
 
-Role split rule (A11): `IS_PARENT = isNull(ParentOrderId) || ParentOrderId == ```. Testing null
-**and** empty matters: a JSON feed omits the field, a FIX-derived feed sends it empty, and
-`== ``` alone is false on null (doc 14 §3's rule). A parent misfiled as a child becomes
-`NO_LINK` and orphans its subtree.
+Role split rule (A11, confirmed): `IS_PARENT = isNull(ParentOrderId)`. Null means parent; any
+non-null value means child. An empty string is therefore a child with no link, which the DAG
+reports as `NO_LINK` — a visible contract violation, never a silently misfiled parent. The
+pre-cutover check (doc 09 §6) asserts that no row carries an empty `ParentOrderId`. Should a
+feed turn out to send `""` for parents after all, the fix is the one-line relaxation doc 14 §3
+uses (`|| ParentOrderId == ```), applied knowingly and recorded here.
 
 ## 4. In-worker lineage tables (`oms-lineage` globals)
 
@@ -234,5 +236,5 @@ system **and the book** named. "Which executions" (R15) is a separate data path 
 | `OMS_TRACE_CLOCK_SEC` | `30` | the aging clock period |
 | `OMS_TRACE_QTY_TOL` | `0` | tolerance |
 | `OMS_TRACE_EXPECT_ONE_EDGES` | `A-Bp,Bc-Cp` | the 1 : 1 edges (A4) |
-| `OMS_TRACE_PARENT_ID_COLUMN` | `ParentOrderId` | the in-system parent id column (Q15) |
+| `OMS_TRACE_PARENT_ID_COLUMN` | `ParentOrderId` | the in-system parent id column (Q15, confirmed) |
 | `OMS_TRACE_TZ` | `America/New_York` | `Date` assignment and the daily window |

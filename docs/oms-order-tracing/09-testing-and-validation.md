@@ -41,7 +41,7 @@ L1 asserts the oracle; L2 asserts the engine equals the oracle. "A(1000/1000)" r
 | `late_bp` | Bc1 arrives before Bp1 | `links_bc UNRESOLVED`; Bc1's Cp and Cc have `RootState UNRESOLVED`; heals when Bp1 lands |
 | `late_a` | Bp1 arrives before A1 | `links_bp UNRESOLVED` but `RootId = A1` already (the A id is on the row); `edge_a_bp` has no A row; heals when A1 lands |
 | `no_link` | a `C_PARENT` with empty `UpstreamRef` | `NO_LINK`; counted, never joined |
-| `parent_misfiled` | a B parent row with `ParentOrderId = ""` (empty, not null) | filed as a parent (the role rule tests both); the `_null` twin likewise |
+| `empty_parent_id` | a B row with `ParentOrderId = ""` (empty, not null) | filed as a child with `NO_LINK` (the contract says null means parent); the pre-cutover check reports the count |
 | `two_b_parents` | two B parents reference the same A | `CARDINALITY` on the `A-Bp` row once aged; both B subtrees still reconcile |
 | `b_child_never_reached_c` | Bc3 (400/0) has no C parent | `MISSING_CHILD` (amber) on `Bc-Cp` for Bc3; becomes `MISSING_DOWNSTREAM` if Bc3 executes; `CParentsMinusBChildren = −1` |
 | `mismatch` | a Cc SELL under a BUY Cp | `MISMATCH` on the Cc row; quantities still roll up |
@@ -108,8 +108,9 @@ topic (or a day of `OMS_RAW` exported to files) and prints, per system:
 
 - rows, distinct `OrderId`, messages per order (expect ≥ 1, median by Q3);
 - `UpstreamRef` null rate (must be ~0 on B and C, 100 % on A);
-- **role split**: parents versus children per system from `ParentOrderId` (null and empty
-  counted separately, Q15), and whether children carry `UpstreamRef` too (Q16);
+- **role split**: parents (null `ParentOrderId`) versus children per system, and the
+  **empty-string `ParentOrderId` count, which must be 0** (the Q15 contract); plus whether
+  children carry `UpstreamRef` too (Q16);
 - **resolution rate per hop**: B parents → A ids, B children → B parent ids, C parents → B
   child ids, C children → C parent ids (AC7 ≥ 99.9 % on a complete sample window; lower means
   A5/A6 or an ingestion gap);

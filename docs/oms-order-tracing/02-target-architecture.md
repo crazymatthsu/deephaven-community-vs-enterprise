@@ -212,7 +212,7 @@ Query, a managed long-running worker.
 | D6 | Aging over receive time; transient gaps are not drift | instantaneous diff | 00 F12, 04 §5 |
 | D7 | Drift history via DTW to `OMS_TRACE`; consumers subscribe to small aggregates | everything over Barrage; everything via Kafka | 02 §6, 05 §8 |
 | D8 | Native id columns for joins; synthetic `NodeKey` strings only in UI slices | `System + "|" + OrderId` on 100 M rows | 06 §1 |
-| D9 | Role split on `ParentOrderId` inside the adapter | separate parent/child tables from the feeds | 03 §3, Q15/Q18 |
+| D9 | Role split on `ParentOrderId` inside the adapter: null = parent, non-null = child (Q15, answered 2026-10-26); an empty string is a `NO_LINK` child, never a silently misfiled parent | separate parent/child tables from the feeds; a role/type column | 03 §3, Q18 |
 | D10 | Python Core+ scripts from Git; a Python reference oracle tested row for row | Groovy; untested formulas | 09, 10 |
 
 ## 10. Extension: execution-level identification (R15, Q17)
