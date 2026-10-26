@@ -14,7 +14,7 @@ adds what is specific to order tracing.
 | dev-community | Deephaven Community in Podman (the fix42 repo's compose files) | the DAG, the oracle, the UI (doc 10 M1) | no Enterprise APIs; `OMS_TRACE_SOURCE=mock|files|kafka` |
 | dev-enterprise | single-node Enterprise Podman on a Linux host | ingester + lineage end to end on captured samples | Windows/WSL2 Podman is unsupported and fragile (fix42 doc 17); use a Linux VM or a dev EKS namespace |
 | uat | the production topology (EKS or multi-node Podman), UAT Kafka | AC5–AC8, the sizing day (doc 06 §3) | same PQ definitions as prod, lower heap |
-| prod | | | |
+| prod | Deephaven Enterprise **2026.01.054** (Q10) | | every environment runs the same release; `scripts/check_env.sh` refuses a mismatch |
 
 ## 2. Persistent query inventory
 
@@ -150,7 +150,7 @@ A malformed value is a start-up error (as the fix42 modules do), never a silent 
 
 ## 9. Deployment order (first install and every environment)
 
-1. `scripts/check_env.sh`: Enterprise version, Core+ Python version, dispatcher heap caps,
+1. `scripts/check_env.sh`: Enterprise version (expected 2026.01.054, Q10) and the matching Core+ Python package version, dispatcher heap caps,
    Kafka reachability from the merge nodes, storage mounted on merge and query nodes.
 2. `scripts/deploy_schemas.sh`: `dhconfig schema import` for `OMS_RAW.*` and `OMS_TRACE.*`.
 3. `scripts/deploy_dis.sh`: `dhconfig dis add` ×4 (doc 05 §2); validate routing; confirm the
@@ -176,4 +176,5 @@ A malformed value is a start-up error (as the fix42 modules do), never a silent 
 - A heap or schedule change is a PQ edit; keep `pq/*.xml` in sync (`dhconfig pq export`).
 - Platform upgrades: re-run `scripts/check_env.sh`; the DAG is Community-Core operations and
   is the least version-sensitive part; the ingester and client import paths are the most, which
-  is why they are isolated in `ingest.py` and `oms_trace.enterprise`.
+  is why they are isolated in `ingest.py` and `oms_trace.enterprise`. The design is written
+  against 2026.01.054; a release change re-runs M2's API confirmation before anything else.

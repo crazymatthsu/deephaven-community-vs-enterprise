@@ -9,7 +9,7 @@ Phased delivery of docs 02–09, with the module layout, what is reused from the
 
 | Milestone | Deliverables | Exit gate | Depends on |
 |---|---|---|---|
-| **M0 Decisions** | answers to doc 01 §8 Q1–Q8 and Q10–Q13; id type decided (A9); window and thresholds set | doc 01 updated; docs 03/06 numbers replaced where answers differ | OMS teams, Deephaven admins |
+| **M0 Decisions** | answers to doc 01 §8 Q1–Q9 (Q10–Q18 are answered); id type decided (A9); window and thresholds set | doc 01 updated; docs 03/06 numbers replaced where answers differ | OMS teams, business owner |
 | **M1 Community prototype** | `oms_trace` package: `config`, `adapters`, `dag`, `reference`, `mockdata`, `app`; L1 + L2 tests; Community compose with mock and file sources; the 1 M-row sizing run | AC1–AC4 against the oracle; doc 06 §1.3 filled with measured bytes; `trace_check` run on a captured sample (AC7 dry run) | M0 (can start on defaults) |
 | **M2 Enterprise ingest and lineage** | `OMS_RAW` schemas, DIS routing, `ingest.py`, `lineage.py` as PQs on dev-enterprise; Git repo wired to the controller; nightly merge/validation | L4 steps 1–3, 5, 6 on dev-enterprise | M1, platform access |
 | **M3 Outputs** | `break_events` listener, `drift_writer`, `OMS_TRACE` schemas, EOD summary, `ui.py` dashboard, alert sink, ACLs | L4 step 4, 7; desks sign off on `MissedBy` attribution on real UAT data (R5) | M2 |
@@ -95,7 +95,7 @@ and the version-sensitive surface is one file (doc 07 §10).
 |---|---|---|
 | Q3 answered "deltas": the feeds are executions, not states | the DAG needs a fold per system before `last_by` | `fix42cache`-style fold as an adapter stage; the DAG is unchanged |
 | String ids and the upper volume case together (doc 06 §1.3) | one worker does not fit | numeric surrogate ids at ingest; else edge sharding (designed, not built, until M4 says so) |
-| Core+ API names differ from this design's (ingester options, Core+ client, DTW wrapper) | M2 slips | `enterprise.py` isolates them; M2's first task is to compile that file against the installed version |
+| Core+ API names differ from this design's (ingester options, Core+ client, DTW wrapper) | M2 slips | `enterprise.py` isolates them; M2's first task is to compile that file against Enterprise 2026.01.054 (Q10) and its Core+ Python package, reading that release's pages for the Kafka ingester, the Core+ client and the Derived Table Writer |
 | Windows/WSL2 Podman for Enterprise dev (fix42 doc 17) | dev-enterprise unstable | Linux VM or a dev EKS namespace |
 | Lag beyond the window (Q7 wrong) | permanently unresolved rows | measured in M1 from captured samples; window is configuration |
 | Desks disagree with attribution semantics (`MissedBy`) | rework of doc 03 §6 | M3 sign-off on real data before M4 |

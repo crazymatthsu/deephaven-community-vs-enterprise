@@ -225,7 +225,8 @@ Deephaven logs directly, and the Derived Table Writer for persisting derived tab
 
 The review was checked against the official Deephaven Enterprise documentation reachable at
 review time (the site itself could not be fetched from the review environment, so wording is
-paraphrased from search excerpts and should be confirmed on the installed version's pages):
+paraphrased from search excerpts and should be confirmed on the pages for the installed release,
+**Deephaven Enterprise 2026.01.054** per doc 01 Q10):
 
 - Core+ Kafka ingestion runs a Data Import Server inside the worker; the ingester resumes from
   Kafka offsets stored in the checkpoint record, which is updated atomically with the table
