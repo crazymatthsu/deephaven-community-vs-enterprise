@@ -66,10 +66,10 @@ version's schema reference):
 </Table>
 ```
 
-Parents and children of B and of C arrive on **one topic per system** (Q18). The OMS teams
-publish a parent before its children, but the topic is keyed by order id (Q11), so a family
-spans Kafka partitions and the order is not preserved end to end. The design does not depend on
-it: a child that arrives first is `UNRESOLVED` until its parent lands (A15).
+Parents and children of B and of C arrive on **one topic per system** (Q18), parents first, and
+within a system the parent may be assumed to arrive before its children (Q7). The topic is keyed
+by order id (Q11), so Kafka keeps that order per partition only; the design does not depend on it
+either way: a child that arrives first is `UNRESOLVED` until its parent lands (A15).
 
 ### 2.1 Raw execution tables — `OMS_RAW.ExecsA`, `ExecsB`, `ExecsC` (P2b)
 

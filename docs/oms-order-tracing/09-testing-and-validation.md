@@ -57,7 +57,7 @@ L1 asserts the oracle; L2 asserts the engine equals the oracle. "A(1000/1000)" r
 | `over_routed` | a Cp with leaves 300 whose Cc children have 400 open | `OVER_ROUTED` on Cp, `RouteGap −100`; root `OverRoutedQty 100` (AC10) |
 | `cancel_not_propagated` | A, Bp and Bc1 canceled (leaves 0); Cp1 and one Cc still show 100 open | `LEAVES_MISMATCH` on Bc1 (`Bc-Cp` is 1 : 1); `CHILD_STILL_OPEN` on Cp1 if its leaves are 0 while a Cc is open; root `OverRoutedQty` (AC10) |
 | `leaves_mismatch_cross` | A shows 400 open, its B parent 300 | `LEAVES_MISMATCH` on A (`A-Bp` is 1 : 1), aged |
-| `child_first_in_system` | a Bc arrives 2 s before its Bp (different Kafka partitions, Q11) | `links_bc UNRESOLVED` for 2 s, then `LINKED`; nothing alerts (A15) |
+| `child_first_in_system` | a Bc arrives 2 s before its Bp (a lagging Kafka partition, Q11; not expected in production per Q7, but the DAG must survive it) | `links_bc UNRESOLVED` for 2 s, then `LINKED`; nothing alerts (A15) |
 | `exec_dropped_at_c` (P2b) | `missing_at_c` with executions: Bc2 has fills (100, 10.00, T1), (300, 10.01, T2); Cp2 has only the second | aged: `exec_breaks` on `Bc-Cp` for Bc2: key (100, 10.00, T1), `ParentCount 1`, `ChildCount 0`, `EXEC_MISSING_DOWNSTREAM`, `DroppedExecIds = [Bc2's exec id]`, `DroppedQty 100`; `Unexplained 0` (AC9) |
 | `exec_identical_fills_one_dropped` (P2b) | Bc2 has two fills (100, 10.00, T1) with different exec ids; Cp2 has one | one row, `Diff −1`, `DroppedExecIds` lists both, `Ambiguous = true`, `DroppedQty 100` (AC9) |
 | `exec_unbooked_upstream` (P2b) | Cc children have a fill the Cp never booked | `Cp-Cc` on Cp: `EXEC_UNBOOKED_UPSTREAM`, `DroppedExecIds` = the Cc exec id, `ChildOrderIds` names the child |
@@ -136,8 +136,11 @@ topic (or a day of `OMS_RAW` exported to files) and prints, per system:
   and `LeavesQty <= OrderQty − CumQty` except on busts;
 - `EventTs` (tag 60) present and within a few seconds of `RecvTs` on every system (Q12: GMT,
   comparable), so `OMS_TRACE_AGE_CLOCK=event` is safe to enable;
-- the share of children that arrive **after** their parent within each system (informational,
-  Q11/Q18: with topics keyed by order id a sizeable child-first share is normal and heals);
+- the share of children that arrive **after** their parent within each system: expected ≈ 100 %
+  (Q7); a materially lower share means partition lag is reordering families (Q11), which the DAG
+  heals but which is worth knowing before tuning the aging threshold;
+- the **cross-system lag** at `A-Bp` and `Bc-Cp` (child receive time minus parent receive time,
+  p50/p99/max) — the open half of Q7, which sets `OMS_TRACE_DATE_WINDOW_DAYS` (N4);
 - **execution match rate per hop** (P2b): the fraction of a sample's executions on the child
   side that find a `(Qty, Px, TransactTime)` twin on the parent side at exact, 1 ms and 1 s
   precision, and the fraction of orders with two or more identical keys (the ambiguity rate);
