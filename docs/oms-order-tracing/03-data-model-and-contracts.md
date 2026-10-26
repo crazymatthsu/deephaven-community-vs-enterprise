@@ -28,14 +28,14 @@ three; `OrdersB` and `OrdersC` hold **both** parent and child orders, told apart
 | `OrderId` | String | no | the system's own order id, unique across parents and children (A1) |
 | `UpstreamRef` | String | A: null; B parent: the A id; C parent: the B child id; **children: null** (Q16, confirmed 2026-10-26) | the **cross-system** reference, carried by parents only |
 | `ParentOrderId` | String | parents: **null**; children: the parent's `OrderId` in the same system (Q15, confirmed 2026-10-26) | the **in-system** reference; non-null makes the row a child |
-| `Symbol` | String | no | as sent; normalized in the adapter view if A7 fails |
-| `Side` | String | no | as sent; normalized in the adapter |
+| `Symbol` | String | no | as sent; one coding across the three systems (Q13) |
+| `Side` | String | no | as sent; one coding across the three systems (Q13) |
 | `OrderQty` | long | no | order quantity |
 | `CumQty` | long | no | cumulative executed quantity — the value reconciled |
-| `LeavesQty` | long | yes | open quantity, when the feed has it (Q14) |
+| `LeavesQty` | long | no | open quantity — available in all three systems (Q14); reconciled as `RouteGap` |
 | `AvgPx` | double | yes | optional |
 | `OrdStatus` | String | yes | the system's status |
-| `EventTs` | Instant | yes | the OMS's event time |
+| `EventTs` | Instant | yes | the OMS's event time (FIX tag 60, GMT in all three systems and comparable, Q12) |
 | `RecvTs` | Instant | no | the ingester's receive time; used for aging (Q12) |
 | `SeqNo` | long | yes | a per-order sequence from the feed, if any (A8) |
 | `KafkaPartition` | int | no | provenance |
@@ -66,9 +66,10 @@ version's schema reference):
 </Table>
 ```
 
-If B or C publish parents and children on two topics (Q18), they land in two tables
-(`OrdersBParent`, `OrdersBChild`) and the adapter `merge`s them before `last_by`; nothing else
-changes.
+Parents and children of B and of C arrive on **one topic per system** (Q18). The OMS teams
+publish a parent before its children, but the topic is keyed by order id (Q11), so a family
+spans Kafka partitions and the order is not preserved end to end. The design does not depend on
+it: a child that arrives first is `UNRESOLVED` until its parent lands (A15).
 
 ### 2.1 Raw execution tables — `OMS_RAW.ExecsA`, `ExecsB`, `ExecsC` (P2b)
 
@@ -103,9 +104,8 @@ maps them onto this contract (doc 04 §1). It is the only code that changes when
 | `System` | String | `A`, `B`, `C` |
 | `OrderId` | String | as raw; never null |
 | `LinkId` | String | the id of the **parent node**: `UpstreamRef` on `B_PARENT` and `C_PARENT`, `ParentOrderId` on `B_CHILD` and `C_CHILD`, `""` on `A_ROOT`; null → `""` |
-| `Symbol`, `Side` | String | normalized to one coding; null → `""` |
-| `OrderQty`, `CumQty` | long | null → `0` |
-| `LeavesQty` | long | null → `0` |
+| `Symbol`, `Side` | String | as sent (one coding across systems, Q13); null → `""` |
+| `OrderQty`, `CumQty`, `LeavesQty` | long | null → `0` (`LeavesQty` is present in all three systems, Q14) |
 | `Status` | String | `OrdStatus`, null → `""` |
 | `RecvTs` | Instant | as raw |
 | `Present` | boolean | constant `true`; joined onto children to tell "parent exists" from "parent exists with null columns" |
@@ -152,6 +152,8 @@ Parents with the rollup of their direct children. One row per parent node.
 | `ChildCumQty` | `sum(CumQty)` over direct children (null → 0) |
 | `ChildLastTs` | `max(RecvTs)` over direct children |
 | `FillGap` | `CumQty − ChildCumQty` (long) |
+| `ChildLeavesQty` | `sum(LeavesQty)` over direct children (null → 0) |
+| `RouteGap` | `LeavesQty − ChildLeavesQty` (long): positive = open here and not routed below, negative = more open below than here |
 | `LastChangeTs` | `max(RecvTs, ChildLastTs)` |
 | `Edge` | `A-Bp`, `Bp-Bc`, `Bc-Cp`, `Cp-Cc` |
 | `Scope` | `CROSS` (`A-Bp`, `Bc-Cp`) or `INTERNAL` (`Bp-Bc`, `Cp-Cc`) |
@@ -162,8 +164,8 @@ downstream has nothing) and ages like any other.
 
 ### 4.4 Aged gaps — `gaps`
 
-`merge([edge_*]).where("FillGap != 0 || (ExpectOne && ChildCount != 1)")` joined with the
-clock (doc 04 §5):
+`merge([edge_*]).where("FillGap != 0 || RouteGap != 0 || (ExpectOne && ChildCount != 1)")` joined
+with the clock (doc 04 §5):
 
 | Column | Formula |
 |---|---|
@@ -172,15 +174,16 @@ clock (doc 04 §5):
 | `BreakKind` | §6 |
 | `IsDrift` | `BreakKind` is a red kind |
 | `ShortSide` | `FillGap > 0 ? CHILD : PARENT` — which book is short |
-| `MissedBy` | the system whose book is short: `CROSS` edges: `CHILD` → the child level's system, `PARENT` → the parent level's system; `INTERNAL` edges: the system itself |
+| `MissedBy` | the system whose book is short: `CROSS` edges: `CHILD` → the child level's system, `PARENT` → the parent level's system; `INTERNAL` edges: the system itself (meaningful for the fill kinds) |
+| `OpenAt` | `RouteGap > 0 ? PARENT : RouteGap < 0 ? CHILD : ""` — where the unmatched open quantity sits (meaningful for the route kinds) |
 
 ### 4.5 Outputs
 
 | Table | Grain | Columns |
 |---|---|---|
-| `drift_edges` | one row per parent with an aged break | `Edge`, `Scope`, `Level`, `System`, `OrderId`, `RootId`, `RootState`, `Symbol`, `Side`, `Status`, `OrderQty`, `CumQty`, `ChildCount`, `ChildCumQty`, `FillGap`, `GapAgeSec`, `BreakKind`, `ShortSide`, `MissedBy` |
-| `drift_by_a_order` | one row per root with any aged break below it | `RootId`, `Symbol`, `Side`, `ACumQty`, `StreetCumQty` (Σ `C_CHILD` cum under the root), `GapABp`, `SumGapBpBc`, `SumGapBcCp`, `SumGapCpCc`, `MissingAtB = max(GapABp, 0)`, `UnbookedAtA = max(−GapABp, 0)`, `InternalB = SumGapBpBc` (signed), `MissingAtC = max(SumGapBcCp, 0)`, `UnbookedAtB = max(−SumGapBcCp, 0)`, `InternalC = SumGapCpCc` (signed), `Breaks` |
-| `drift_by_symbol` | one row per `Symbol`, `Side`, `Edge` | `Breaks`, `ParentCumQty`, `ChildCumQty`, `MissingDownstream = Σ max(FillGap, 0)`, `UnbookedUpstream = Σ max(−FillGap, 0)` |
+| `drift_edges` | one row per parent with an aged break | `Edge`, `Scope`, `Level`, `System`, `OrderId`, `RootId`, `RootState`, `Symbol`, `Side`, `Status`, `OrderQty`, `CumQty`, `ChildCount`, `ChildCumQty`, `FillGap`, `LeavesQty`, `ChildLeavesQty`, `RouteGap`, `GapAgeSec`, `BreakKind`, `ShortSide`, `MissedBy`, `OpenAt` |
+| `drift_by_a_order` | one row per root with any aged break below it | `RootId`, `Symbol`, `Side`, `ACumQty`, `StreetCumQty` (Σ `C_CHILD` cum under the root), `GapABp`, `SumGapBpBc`, `SumGapBcCp`, `SumGapCpCc`, `MissingAtB = max(GapABp, 0)`, `UnbookedAtA = max(−GapABp, 0)`, `InternalB = SumGapBpBc` (signed), `MissingAtC = max(SumGapBcCp, 0)`, `UnbookedAtB = max(−SumGapBcCp, 0)`, `InternalC = SumGapCpCc` (signed), `ALeavesQty`, `StreetLeavesQty` (Σ `C_CHILD` leaves under the root), `HeldQty = Σ max(RouteGap, 0)`, `OverRoutedQty = Σ max(−RouteGap, 0)` over the root's edges, `Breaks` |
+| `drift_by_symbol` | one row per `Symbol`, `Side`, `Edge` | `Breaks`, `ParentCumQty`, `ChildCumQty`, `MissingDownstream = Σ max(FillGap, 0)`, `UnbookedUpstream = Σ max(−FillGap, 0)`, `OverRouted = Σ max(−RouteGap, 0)` |
 | `unresolved_links` | one row per node with `ParentState != LINKED` | `Level`, `System`, `OrderId`, `LinkId`, `ParentState`, `Symbol`, `Side`, `CumQty`, `Status`, `UnresolvedSince`, `AgeSec`, `Alerted = AgeSec >= threshold` |
 | `root_unresolved` | nodes `LINKED` but `RootState = UNRESOLVED` | `Level`, `System`, `OrderId`, `LinkId`, `CumQty` — informational; the alert is on the unresolved node above |
 | `break_events` | **blink**: one row per node whose `BreakKind` or `ParentState` changed this cycle | `Ts`, `Level`, `System`, `OrderId`, `RootId`, `Edge`, `From`, `To`, `FillGap`, `GapAgeSec` |
@@ -225,6 +228,10 @@ drift; amber are structural or informational.
 | `TRANSIENT` | parent | `FillGap != 0` and `GapAgeSec < AGE_SEC` | propagation lag, not drift (R6) | none |
 | `MISSING_DOWNSTREAM` | parent | `FillGap > 0`, aged | the children's book is short by `FillGap`: on `A-Bp` → **B dropped executions**; `Bp-Bc` → **B's child book is short against its own parent**; `Bc-Cp` → **C dropped executions**; `Cp-Cc` → **C's child book is short** | red |
 | `UNBOOKED_UPSTREAM` | parent | `FillGap < 0`, aged | the parent's book is short: `A-Bp` → **A has not booked** what B shows; `Bp-Bc` → **B's parent book lags its children**; `Bc-Cp` → **B has not booked** what C shows; `Cp-Cc` → **C's parent book lags** | red |
+| `LEAVES_MISMATCH` | parent on an `ExpectOne` edge | `RouteGap != 0`, aged, no fill break | the two books of a 1 : 1 hop disagree on open quantity (a cancel or replace seen on one side only) | red |
+| `CHILD_STILL_OPEN` | parent on a 1 : n edge | `RouteGap < 0 && LeavesQty == 0`, aged | the parent is done or canceled but a child is still working: **the cancel did not propagate** | red |
+| `OVER_ROUTED` | parent on a 1 : n edge | `RouteGap < 0`, aged | more open below than above: overfill risk | red |
+| `HELD` | parent on a 1 : n edge | `RouteGap > 0`, aged | open here, not routed further (unsliced quantity at B, unrouted at C) | amber |
 | `NONE` | any | | reconciles | — |
 
 The identities that make the rollups add up (doc 14 §5.3 proves the same telescoping; unit
@@ -234,6 +241,7 @@ tested in doc 09): for a root whose every node is linked,
 ACumQty − StreetCumQty = GapABp + Σ GapBpBc + Σ GapBcCp + Σ GapCpCc
 MissingAtB − UnbookedAtA = GapABp        MissingAtC − UnbookedAtB = Σ GapBcCp
 InternalB = Σ GapBpBc                    InternalC = Σ GapCpCc
+ALeavesQty − StreetLeavesQty = Σ RouteGap over the four edges = HeldQty − OverRoutedQty
 ```
 
 So `drift_by_a_order` is the source document's "the number system A needs to see", with the
@@ -257,7 +265,11 @@ names every candidate, which is the most the key can say.
 - **Quantities are `long`.** Gaps are exact; `QTY_TOL` exists only for fractional feeds.
 - **Nulls** are removed at the adapter (§3). A null parent column after a join means "no
   parent", never "parent with null value", because `ParentPresent` is checked first.
-- **Time**: aging uses `RecvTs`; `EventTs` is kept for display and forensics.
+- **Time**: `EventTs` (FIX tag 60) is GMT in all three systems and comparable (Q12). Aging uses
+  `RecvTs` by default (`OMS_TRACE_AGE_CLOCK=recv`): a republished old report would age instantly
+  under event time. `OMS_TRACE_AGE_CLOCK=event` switches the gap and unresolved ages to
+  `EventTs`, which measures how long the books have disagreed in market time rather than in
+  our observation time. The execution match key always uses event time (`TransactTime`).
 - **`Date`** is assigned by the ingester from `RecvTs` in the configured zone.
 
 ## 8. Configuration keys referenced by these tables
@@ -273,6 +285,7 @@ names every candidate, which is the most the key can say.
 | `OMS_TRACE_EXPECT_ONE_EDGES` | `A-Bp,Bc-Cp` | the 1 : 1 edges (A4) |
 | `OMS_TRACE_PARENT_ID_COLUMN` | `ParentOrderId` | the in-system parent id column (Q15, confirmed) |
 | `OMS_TRACE_TZ` | `America/New_York` | `Date` assignment and the daily window |
+| `OMS_TRACE_AGE_CLOCK` | `recv` | `recv` (receive time) or `event` (tag 60, GMT, Q12) as the clock the gap and unresolved ages are measured against |
 | `OMS_TRACE_EXEC_PX_SCALE` | `1000000` | price precision for the execution match key (1e-6) |
 | `OMS_TRACE_EXEC_TIME_BUCKET_MS` | `1` | transaction-time precision for the execution match key; set from the pre-cutover match-rate report |
 | `OMS_TRACE_EXEC_SCOPE` | `aged_gaps` | `aged_gaps` (lazy, the default) or `all` (every edge; O(executions) heap, needs its own PQ — doc 06 §1.5) |

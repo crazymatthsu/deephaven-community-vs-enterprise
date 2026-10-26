@@ -53,6 +53,11 @@ L1 asserts the oracle; L2 asserts the engine equals the oracle. "A(1000/1000)" r
 | `midnight` | Bc on `Date` D, Cp on D + 1, window 2 | `LINKED` |
 | `window_exceeded` | Bc on D, Cp on D + 2, window 2 | `UNRESOLVED` on D + 2 (documented limitation; sets Q7) |
 | `large_fanout` | A → Bp → 50 Bc → 50 Cp → 10 Cc each (2 500 Cc rows) | all `NONE`; rollup counts 50, 1 and 10 |
+| `held` | Bp(1000/300, leaves 700) with Bc children open 500 in total | `HELD` (amber) on Bp with `RouteGap +200`; no drift row; `drift_by_a_order` absent (HELD alone is not drift) |
+| `over_routed` | a Cp with leaves 300 whose Cc children have 400 open | `OVER_ROUTED` on Cp, `RouteGap −100`; root `OverRoutedQty 100` (AC10) |
+| `cancel_not_propagated` | A, Bp and Bc1 canceled (leaves 0); Cp1 and one Cc still show 100 open | `LEAVES_MISMATCH` on Bc1 (`Bc-Cp` is 1 : 1); `CHILD_STILL_OPEN` on Cp1 if its leaves are 0 while a Cc is open; root `OverRoutedQty` (AC10) |
+| `leaves_mismatch_cross` | A shows 400 open, its B parent 300 | `LEAVES_MISMATCH` on A (`A-Bp` is 1 : 1), aged |
+| `child_first_in_system` | a Bc arrives 2 s before its Bp (different Kafka partitions, Q11) | `links_bc UNRESOLVED` for 2 s, then `LINKED`; nothing alerts (A15) |
 | `exec_dropped_at_c` (P2b) | `missing_at_c` with executions: Bc2 has fills (100, 10.00, T1), (300, 10.01, T2); Cp2 has only the second | aged: `exec_breaks` on `Bc-Cp` for Bc2: key (100, 10.00, T1), `ParentCount 1`, `ChildCount 0`, `EXEC_MISSING_DOWNSTREAM`, `DroppedExecIds = [Bc2's exec id]`, `DroppedQty 100`; `Unexplained 0` (AC9) |
 | `exec_identical_fills_one_dropped` (P2b) | Bc2 has two fills (100, 10.00, T1) with different exec ids; Cp2 has one | one row, `Diff −1`, `DroppedExecIds` lists both, `Ambiguous = true`, `DroppedQty 100` (AC9) |
 | `exec_unbooked_upstream` (P2b) | Cc children have a fill the Cp never booked | `Cp-Cc` on Cp: `EXEC_UNBOOKED_UPSTREAM`, `DroppedExecIds` = the Cc exec id, `ChildOrderIds` names the child |
@@ -78,6 +83,7 @@ starting point.
 5. **Monotone healing**: a parent's arrival never increases the unresolved count.
 6. **Direct children only**: changing a `C_CHILD` never changes `edge_a_bp`'s or `edge_bp_bc`'s `ChildCumQty`.
 7. **Root propagation**: every node with `RootState = RESOLVED` has the `RootId` of the A row reachable by following `LinkId` four times at most; `root_unresolved` is exactly the set of linked nodes with a broken chain above.
+9. **Open-quantity telescoping**: for each fully linked root, `ALeavesQty − StreetLeavesQty == Σ RouteGap == HeldQty − OverRoutedQty` (positive and negative parts summed separately, so a held slice never cancels an over-routed one).
 8. **Execution accounting** (P2b): on every broken parent `ExplainedGap + Unexplained == FillGap`, and `Σ DroppedQty` over `EXEC_MISSING_DOWNSTREAM` rows minus `Σ` over `EXEC_UNBOOKED_UPSTREAM` rows equals `ExplainedGap`.
 
 ## 4. Live tests in the embedded engine (L2)
@@ -126,7 +132,12 @@ topic (or a day of `OMS_RAW` exported to files) and prints, per system:
   A5/A6 or an ingestion gap);
 - **cardinality per hop**: B parents per A and C parents per B child (both ≈ 1, A4); children
   per parent inside B and C (Q2); flags > 1 000 as a probable key error;
-- `CumQty` monotonicity per order (busts counted; Q8);
+- `CumQty` monotonicity per order (busts counted; Q8); `LeavesQty` present on every row (Q14)
+  and `LeavesQty <= OrderQty − CumQty` except on busts;
+- `EventTs` (tag 60) present and within a few seconds of `RecvTs` on every system (Q12: GMT,
+  comparable), so `OMS_TRACE_AGE_CLOCK=event` is safe to enable;
+- the share of children that arrive **after** their parent within each system (informational,
+  Q11/Q18: with topics keyed by order id a sizeable child-first share is normal and heals);
 - **execution match rate per hop** (P2b): the fraction of a sample's executions on the child
   side that find a `(Qty, Px, TransactTime)` twin on the parent side at exact, 1 ms and 1 s
   precision, and the fraction of orders with two or more identical keys (the ambiguity rate);

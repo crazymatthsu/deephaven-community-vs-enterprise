@@ -26,7 +26,7 @@ many children; C holds one parent per B child and many children under each — f
 edges, the same shape as the fix42 repo's doc 14 module.
 
 The one-paragraph summary: reconcile **per edge** on all four edges (parent versus the sum of
-its direct children), treat a child whose parent has not arrived as a **state** that heals when
+its direct children, in executed **and** open quantity), treat a child whose parent has not arrived as a **state** that heals when
 the parent lands rather than a buffer to retry, ingest each feed through a **Core+ Kafka ingester with an
 in-worker Data Import Server**, run the whole lineage in **one worker** until a measured gate
 trips, and shard **per edge by the parent's id** when it does, with root ids flowing down

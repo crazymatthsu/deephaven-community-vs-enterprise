@@ -224,7 +224,8 @@ Query, a managed long-running worker.
 | D9 | Role split on `ParentOrderId` inside the adapter: null = parent, non-null = child (Q15, answered 2026-10-26); an empty string is a `NO_LINK` child, never a silently misfiled parent | separate parent/child tables from the feeds; a role/type column | 03 §3, Q18 |
 | D10 | Python Core+ scripts from Git; a Python reference oracle tested row for row | Groovy; untested formulas | 09, 10 |
 | D12 | Open quantity reconciled per edge too (`RouteGap`): `HELD` amber on in-system edges, `OVER_ROUTED` / `CHILD_STILL_OPEN` red, `LEAVES_MISMATCH` red on the 1 : 1 edges (Q14 answered 2026-10-26) | executed quantity only | 03 §6, 04 §3 |
-| D13 | One topic and one raw table per system, parents and children split by `ParentOrderId` (Q18 answered 2026-10-26); the design does not rely on parent-before-child ordering | two topics / two tables per system | 03 §2, 05 §4 |
+| D13 | One topic and one raw table per system, parents and children split by `ParentOrderId` (Q18); topics keyed by order id (Q11), so parent-before-child holds per partition only and the design does not rely on it | two topics / two tables per system | 03 §2, 05 §4 |
+| D14 | Aging clock configurable: receive time by default, event time (GMT tag 60, comparable across systems, Q12) as an option; the execution match key always uses event time | event time only (a republished old report would age instantly) | 03 §7 |
 | D11 | Execution-level identification by **multiset match on `(Qty, Px, TransactTime)`**, computed **lazily for parents with an aged gap** (`where_in`), busts netted by `ExecRefId` | matching every execution on every edge (O(executions) heap); matching by exec id (ids do not cross hops, Q17) | 02 §10, 04 §10, 06 §1.5 |
 
 ## 10. Execution-level identification (R15, Q17)

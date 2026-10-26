@@ -23,7 +23,8 @@ Replaces sections 8 and 11.7 of the source document for the design in docs 02–
 | Out-of-order messages within one order (A8 fails) | last-by may keep a stale state | wrong `CumQty` until the next message | switch last-by to `sort_descending("SeqNo").first_by` or `agg.sorted_last` on `SeqNo`/`EventTs` in the adapter | compare `SeqNo` monotonicity in M1 validation |
 | Re-keyed ids (A1/A5 fail) | orphans or mislinks | none | the id-history index (doc 04 §2, generic path) | resolution rate in `trace_stats` drops |
 | Schema drift in a feed (new/renamed field) | rejects rise; or a column reads null | rows rejected until fixed | fix the value spec; replay the partition (R1) | reject rate |
-| Clock skew between OMS and ingesters | none: aging uses `RecvTs` | — | — | — |
+| Clock skew between OMS and ingesters | none with `OMS_TRACE_AGE_CLOCK=recv`; with `event`, tag 60 is GMT in all three systems (Q12) so skew is not expected — a republished old report would age instantly, which is why `recv` is the default | — | switch the clock back to `recv` | `GapAgeSec` jumps at a feed replay |
+| A cancel or replace does not propagate down a hop | `CHILD_STILL_OPEN` (parent done, a child still working) or `LEAVES_MISMATCH` on a 1 : 1 hop once aged; `OverRoutedQty` on the root | none | it is the finding: the child's system must be told to cancel | `drift_by_symbol.OverRouted`; `CHILD_STILL_OPEN` count |
 | Execution feed lags the order-state feed (or the reverse) in one system | `exec_breaks` briefly shows a key on one side only; `Unexplained` moves while states and executions settle | none | nothing; both are aged by the same quantity gap | only if it persists past the aging threshold |
 | `TransactTime` or price differs across a hop beyond the configured precision | the quantity gap is real but `Unexplained != 0` and the execution rows do not pair up | none | widen `OMS_TRACE_EXEC_TIME_BUCKET_MS` / `PX_SCALE` from the match-rate report; a residue as-of match is the designed follow-up (doc 04 §10) | `exec_breaks_by_edge.Unexplained != 0` aged |
 | A bust is reported in one system only | an execution-level break naming the busted fill on the side that still has it; the quantity gap agrees | none | it is the finding | as any exec break |
@@ -47,6 +48,7 @@ row in `break_events` so it lands in `DriftEvents`). Defaults; tune after the fi
 |---|---|---|---|---|
 | Unresolved links older than the alert age | `unresolved_links.where("Alerted")` count per system | > 0 | > 100 or any older than 4 h | one alert per (System, OrderId) crossing; summary every 15 min while non-zero |
 | C parents versus B children | `trace_stats.CParentsMinusBChildren` | ≠ 0 for > 10 min | < −100 (B children never reaching C) | per crossing |
+| Over-routed open quantity | `drift_by_symbol.OverRouted`, `drift_by_a_order.OverRoutedQty` | > 0 for > 5 min | > threshold agreed with the desks (overfill risk) | per root crossing |
 | Unexplained execution residue | `exec_breaks_by_edge.where("Unexplained != 0")` count | > 0 for > 5 min | > 10 % of broken parents (the match precision is wrong for the feed) | per edge |
 | Drift quantity by edge | `trace_stats.MissingDownstreamQty<Edge>`, `UnbookedUpstreamQty<Edge>` | > 0 for > 5 min | > threshold agreed with the desks (Q9) | per edge, re-alert on 2× growth |
 | Drift count by symbol | `drift_by_symbol.Breaks` | any new symbol | > 10 symbols | per symbol |

@@ -123,10 +123,12 @@ dis = get_dis_by_name(DIS)                    # the DIS from §2; must have priv
 dis.consume(opts)                             # runs for the life of the PQ
 ```
 
-B's and C's parent and child orders arrive on one topic each (Q18) and land in one table; the
-lineage adapter splits them on `ParentOrderId`. If a system publishes two topics, run two
-`dis.consume` options in the same PQ writing `Orders<X>Parent` / `Orders<X>Child` and let the
-adapter `merge` them.
+B's and C's parent and child orders arrive on **one topic per system** (Q18) and land in one
+table; the lineage adapter splits them on `ParentOrderId`. The OMS teams publish a parent before
+its children, but the topic is keyed by **order id** (Q11), so a parent and its children sit on
+different Kafka partitions and the ingester cannot preserve that order end to end. The lineage
+DAG does not depend on it (A15); the in-system child-first arrivals it produces are transient
+`UNRESOLVED` states that heal within the propagation delay.
 
 `RecvTs`, `KafkaPartition` and `KafkaOffset` are supplied by the ingester's built-in
 timestamp/offset columns where the version provides them; otherwise add them through the value

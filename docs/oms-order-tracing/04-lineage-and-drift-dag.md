@@ -51,12 +51,14 @@ def canon(level: str, system: str, link: str | None):
         "OrderId",
         f"LinkId = {link_expr}",
         "Symbol = isNull(Symbol) ? `` : Symbol",
-        "Side = isNull(Side) ? `` : Side",                # normalize here if codings differ (A7)
+        "Side = isNull(Side) ? `` : Side",                # one coding across systems (Q13): compared as sent
         "OrderQty = isNull(OrderQty) ? 0L : OrderQty",
         "CumQty = isNull(CumQty) ? 0L : CumQty",
         "LeavesQty = isNull(LeavesQty) ? 0L : LeavesQty",
         "Status = isNull(OrdStatus) ? `` : OrdStatus",
         "RecvTs",
+        # the aging clock: receive time by default; event time (tag 60, GMT, Q12) when OMS_TRACE_AGE_CLOCK=event
+        "AgeTs = " + ("EventTs" if os.environ.get("OMS_TRACE_AGE_CLOCK", "recv") == "event" else "RecvTs"),
         "Present = true",
     ]
 
@@ -118,20 +120,22 @@ doc 14's id index and ordered candidate parents (the generic path in §8).
 def children_rollup(children):
     return children.where("LinkId != ``").agg_by(
         [agg.count_("ChildCount"),
-         agg.sum_(["ChildCumQty = CumQty"]),
-         agg.max_(["ChildLastTs = RecvTs"])],
+         agg.sum_(["ChildCumQty = CumQty", "ChildLeavesQty = LeavesQty"]),
+         agg.max_(["ChildLastTs = AgeTs"])],
         by=["LinkId"],
     )
 
 def edge(parents, children, name: str, scope: str, expect_one: bool):
     return (
         parents.natural_join(children_rollup(children), on=["OrderId=LinkId"],
-                             joins=["ChildCount", "ChildCumQty", "ChildLastTs"])
+                             joins=["ChildCount", "ChildCumQty", "ChildLeavesQty", "ChildLastTs"])
         .update_view([
             "ChildCount = isNull(ChildCount) ? 0L : ChildCount",
             "ChildCumQty = isNull(ChildCumQty) ? 0L : ChildCumQty",
+            "ChildLeavesQty = isNull(ChildLeavesQty) ? 0L : ChildLeavesQty",
             "FillGap = CumQty - ChildCumQty",
-            "LastChangeTs = isNull(ChildLastTs) || epochNanos(RecvTs) > epochNanos(ChildLastTs) ? RecvTs : ChildLastTs",
+            "RouteGap = LeavesQty - ChildLeavesQty",        # open quantity, Q14 (doc 14's RouteGap)
+            "LastChangeTs = isNull(ChildLastTs) || epochNanos(AgeTs) > epochNanos(ChildLastTs) ? AgeTs : ChildLastTs",
             f"Edge = `{name}`", f"Scope = `{scope}`", f"ExpectOne = {'true' if expect_one else 'false'}",
         ])
     )
@@ -175,7 +179,7 @@ clock = time_table(f"PT{CLOCK}S").view(["Now = Timestamp"]).last_by()
 # Age only the candidates: rows with a gap, or a 1:1 edge with the wrong child count.
 # On a quiet book this is a few thousand rows, not the whole table.
 candidates = merge([edge_a_bp, edge_bp_bc, edge_bc_cp, edge_cp_cc]).where(
-    "FillGap != 0 || (ExpectOne && ChildCount != 1)"
+    "FillGap != 0 || RouteGap != 0 || (ExpectOne && ChildCount != 1)"
 )
 gaps = (
     candidates
@@ -186,12 +190,17 @@ gaps = (
         f" : GapAgeSec < {AGE_SEC} ? `TRANSIENT`"
         f" : (ExpectOne && ChildCount > 1) ? `CARDINALITY`"
         f" : (ExpectOne && ChildCount == 0 && CumQty == 0) ? `MISSING_CHILD`"
-        f" : FillGap > 0 ? `MISSING_DOWNSTREAM` : (FillGap < 0 ? `UNBOOKED_UPSTREAM` : `NONE`)",
+        f" : FillGap > 0 ? `MISSING_DOWNSTREAM` : FillGap < 0 ? `UNBOOKED_UPSTREAM`"
+        # open-quantity kinds (Q14): a 1:1 hop must agree exactly; inside B and C holding is legitimate
+        f" : (ExpectOne && RouteGap != 0) ? `LEAVES_MISMATCH`"
+        f" : (RouteGap < 0 && LeavesQty == 0) ? `CHILD_STILL_OPEN`"
+        f" : RouteGap < 0 ? `OVER_ROUTED` : RouteGap > 0 ? `HELD` : `NONE`",
         "ShortSide = FillGap > 0 ? `CHILD` : `PARENT`",
+        "OpenAt = RouteGap > 0 ? `PARENT` : (RouteGap < 0 ? `CHILD` : ``)",
         # CROSS edges: the short book belongs to the other system; INTERNAL: to this one.
         "MissedBy = Scope == `INTERNAL` ? System"
         " : (FillGap > 0 ? (Edge == `A-Bp` ? `B` : `C`) : (Edge == `A-Bp` ? `A` : `B`))",
-        "IsDrift = BreakKind != `TRANSIENT` && BreakKind != `MISSING_CHILD` && BreakKind != `NONE`",
+        "IsDrift = BreakKind != `TRANSIENT` && BreakKind != `MISSING_CHILD` && BreakKind != `HELD` && BreakKind != `NONE`",
     ])
 )
 
@@ -199,7 +208,7 @@ all_links = merge([links_bp, links_bc, links_cp, links_cc])
 unresolved_links = (
     all_links.where("ParentState != `LINKED`")
     .natural_join(clock, on=[], joins=["Now"])
-    .update_view(["AgeSec = diffNanos(RecvTs, Now) / SECOND", f"Alerted = AgeSec >= {UNRES_SEC}"])
+    .update_view(["AgeSec = diffNanos(AgeTs, Now) / SECOND", f"Alerted = AgeSec >= {UNRES_SEC}"])
 )
 root_unresolved = all_links.where("ParentState == `LINKED` && RootState == `UNRESOLVED`")
 ```
@@ -216,15 +225,20 @@ root_unresolved = all_links.where("ParentState == `LINKED` && RootState == `UNRE
 ```python
 drift_edges = gaps.where("IsDrift").view([
     "Edge", "Scope", "Level", "System", "OrderId", "RootId", "RootState", "Symbol", "Side", "Status",
-    "OrderQty", "CumQty", "ChildCount", "ChildCumQty", "FillGap", "GapAgeSec", "BreakKind", "ShortSide", "MissedBy",
+    "OrderQty", "CumQty", "ChildCount", "ChildCumQty", "FillGap", "LeavesQty", "ChildLeavesQty", "RouteGap",
+    "GapAgeSec", "BreakKind", "ShortSide", "MissedBy", "OpenAt",
 ])
 
 def gap_sum_by_root(edge_name: str, col: str):
     return (gaps.where(f"Edge == `{edge_name}` && IsDrift && !isNull(RootId)")
             .agg_by([agg.sum_([f"{col} = FillGap"]), agg.count_(f"{col}Breaks")], by=["RootId"]))
 
-street_by_root = links_cc.where("!isNull(RootId)").agg_by([agg.sum_(["StreetCumQty = CumQty"])], by=["RootId"])
-roots = a_root.view(["RootId", "Symbol", "Side", "ACumQty = CumQty"])
+street_by_root = links_cc.where("!isNull(RootId)").agg_by(
+    [agg.sum_(["StreetCumQty = CumQty", "StreetLeavesQty = LeavesQty"])], by=["RootId"])
+route_by_root = (gaps.where("RouteGap != 0 && !isNull(RootId)")
+                 .update_view(["Held = RouteGap > 0 ? RouteGap : 0L", "OverRouted = RouteGap < 0 ? -RouteGap : 0L"])
+                 .agg_by([agg.sum_(["HeldQty = Held", "OverRoutedQty = OverRouted"])], by=["RootId"]))
+roots = a_root.view(["RootId", "Symbol", "Side", "ACumQty = CumQty", "ALeavesQty = LeavesQty"])
 
 drift_by_a_order = (
     roots
@@ -232,14 +246,19 @@ drift_by_a_order = (
     .natural_join(gap_sum_by_root("Bp-Bc", "SumGapBpBc"), on=["RootId"], joins=["SumGapBpBc", "SumGapBpBcBreaks"])
     .natural_join(gap_sum_by_root("Bc-Cp", "SumGapBcCp"), on=["RootId"], joins=["SumGapBcCp", "SumGapBcCpBreaks"])
     .natural_join(gap_sum_by_root("Cp-Cc", "SumGapCpCc"), on=["RootId"], joins=["SumGapCpCc", "SumGapCpCcBreaks"])
-    .natural_join(street_by_root, on=["RootId"], joins=["StreetCumQty"])
-    .where("!isNull(GapABp) || !isNull(SumGapBpBc) || !isNull(SumGapBcCp) || !isNull(SumGapCpCc)")
+    .natural_join(street_by_root, on=["RootId"], joins=["StreetCumQty", "StreetLeavesQty"])
+    .natural_join(route_by_root, on=["RootId"], joins=["HeldQty", "OverRoutedQty"])
+    .where("!isNull(GapABp) || !isNull(SumGapBpBc) || !isNull(SumGapBcCp) || !isNull(SumGapCpCc)"
+           " || (!isNull(OverRoutedQty) && OverRoutedQty > 0)")
     .update_view([
         "GapABp = isNull(GapABp) ? 0L : GapABp",
         "SumGapBpBc = isNull(SumGapBpBc) ? 0L : SumGapBpBc",
         "SumGapBcCp = isNull(SumGapBcCp) ? 0L : SumGapBcCp",
         "SumGapCpCc = isNull(SumGapCpCc) ? 0L : SumGapCpCc",
         "StreetCumQty = isNull(StreetCumQty) ? 0L : StreetCumQty",
+        "StreetLeavesQty = isNull(StreetLeavesQty) ? 0L : StreetLeavesQty",
+        "HeldQty = isNull(HeldQty) ? 0L : HeldQty",
+        "OverRoutedQty = isNull(OverRoutedQty) ? 0L : OverRoutedQty",
         "MissingAtB = GapABp > 0 ? GapABp : 0L",
         "UnbookedAtA = GapABp < 0 ? -GapABp : 0L",
         "InternalB = SumGapBpBc",
@@ -254,9 +273,10 @@ drift_by_a_order = (
 drift_by_symbol = gaps.where("IsDrift").update_view([
     "MissingDownstream = FillGap > 0 ? FillGap : 0L",
     "UnbookedUpstream = FillGap < 0 ? -FillGap : 0L",
+    "OverRouted = RouteGap < 0 ? -RouteGap : 0L",
 ]).agg_by(
     [agg.count_("Breaks"),
-     agg.sum_(["ParentCumQty = CumQty", "ChildCumQty", "MissingDownstream", "UnbookedUpstream"])],
+     agg.sum_(["ParentCumQty = CumQty", "ChildCumQty", "MissingDownstream", "UnbookedUpstream", "OverRouted"])],
     by=["Symbol", "Side", "Edge"],
 )
 ```
@@ -337,7 +357,8 @@ tables = dag.build_order_tree(topology, {
 })
 # tables["otr_recon"].FillGap is doc 03's FillGap; UNBOOKED_FILL == UNBOOKED_UPSTREAM, PHANTOM_FILL ==
 # MISSING_DOWNSTREAM; ORPHAN == UNRESOLVED; TOO_DEEP never fires on a fixed 5-level chain.
-# LeavesQty -> 0 when the feed lacks it makes RouteGap/HELD meaningless; ignore them (or use them if Q14 says yes).
+# Q14: LeavesQty is available in all three systems, so the module's RouteGap / HELD / OVER_ROUTED /
+# CHILD_STILL_OPEN and its exposure identities apply unchanged.
 ```
 
 This is the recommended **M1 prototype**: adapters, mock data and the oracle for the chain
@@ -504,3 +525,8 @@ Reading the outputs:
 7. `exec_breaks` names the dropped execution in AC9's book, flags `Ambiguous` for k-of-n
    identical fills, nets a propagated bust to nothing and reports an unpropagated one, and
    `ExplainedGap + Unexplained == FillGap` on every broken parent.
+8. The open-quantity identity on every fully linked root:
+   `ALeavesQty − StreetLeavesQty == Σ RouteGap == HeldQty − OverRoutedQty`; `HELD` never sets
+   `IsDrift`; a 1 : 1 edge with `RouteGap != 0` is `LEAVES_MISMATCH`, never `HELD`.
+9. With `OMS_TRACE_AGE_CLOCK=event` every age is measured against `EventTs`; with `recv`
+   against `RecvTs`; the two agree on the scenario books (which stamp both identically).
