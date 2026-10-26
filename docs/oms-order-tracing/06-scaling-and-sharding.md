@@ -51,14 +51,18 @@ parents, and the rest in C children (the most, as Q1 says).
 | **confirmed** (Q1: ~100 M nodes per day across all systems; 2-day window ≈ 1.5 days resident after the daily restart) | ~150 M | ~54 GB | ~23 GB |
 | contingency (volume doubles) | ~300 M | ~108 GB | ~47 GB |
 
-Plus a fixed ~4–8 GB for the JVM, Barrage buffers and Python. The confirmed case fits **one
-worker**: 96–128 GB with string ids, 48–64 GB with long ids (Q19). The contingency still fits one
-worker with long ids and needs §4 with string ids; §4 is designed, not built, until a gate trips.
+Plus a fixed ~4–8 GB for the JVM, Barrage buffers and Python. Ids are alphanumeric (Q19), so the
+string column is the one that applies: the confirmed case fits **one worker of 96–128 GB**; the
+contingency needs §4. The long-id column is kept only to show what the ids cost. §4 is designed,
+not built, until a gate trips.
 
 ### 1.4 Levers before sharding
 
-1. **Numeric ids** if the systems have them (A9), or per-system numeric surrogates carried
-   alongside the natural ids.
+1. ~~Numeric ids~~ — ruled out: the ids are alphanumeric (Q19), and a numeric surrogate assigned
+   at ingest would have to be assigned to the *references* too (`UpstreamRef`, `ParentOrderId`),
+   which needs a lookup of the parent's surrogate before a child can be written — the
+   mapping-table problem the review removed (doc 00 F2/F3). Strings it is; the heap is bought,
+   not engineered away.
 2. **Window**: Q7 decides. If p99 lag at every hop is minutes, a 1-day window halves resident
    state; rows past the window are reported as unresolved, not lost.
 3. **Closed-order pruning**: nodes whose edges reconcile, are terminal and aged can leave the

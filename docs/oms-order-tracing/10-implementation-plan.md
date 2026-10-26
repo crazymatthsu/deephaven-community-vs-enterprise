@@ -69,6 +69,27 @@ and the version-sensitive surface is one file (doc 07 §10).
 | Gradle wrapping of a pytest module, `repos.env` image/pip indirection, LF `.gitattributes` | `basket-oms-demo`, doc 15 | the module skeleton |
 | Stateful fold for delta feeds, if Q3 says deltas | `deephaven-scripts/src/fix42cache` | an adapter stage before `last_by` |
 
+### 3.1 Community module → Enterprise worker: what changes and what does not
+
+The `order_tree_recon` module was built on Deephaven Community. Core+ workers in Enterprise
+1.202601 run the **same engine** (Community Core 42.5), so the question "does Enterprise make a
+difference?" splits cleanly:
+
+| | Same in Enterprise | Different in Enterprise |
+|---|---|---|
+| Engine and table API | `view`, `merge`, `last_by`, `natural_join`, `agg_by`, `update_view`, `where`, `where_in`, `tree`, `time_table`, the formula language: identical, byte for byte | — |
+| The module's DAG, break taxonomy, Python reference oracle, mock data, L1/L2 tests | run unchanged; the embedded-engine tests keep using the Community `deephaven-server` wheel pinned to 42.5 | the Enterprise-only pieces (`db.live_table`, ingesters, the Core+ client) are not testable in the embedded engine: they are covered by L4 on dev-enterprise |
+| **Inputs** | — | the module's sources are mock tables, AMPS SOW mirrors and FIX files; in Enterprise the five level tables come from `db.live_table("OMS_RAW", ...)` over DIS-ingested partitions with a `Date` filter. Only the adapter `view`s change (doc 04 §1, §8); `amps_sow.py` / `fixstate*.py` are not used |
+| **Packaging and lifecycle** | — | Community runs it as an Application Mode app (compose file, `.app` descriptor, a loader calling `app.main(globals())`); Enterprise runs the same `main(globals())` as the body of a **Persistent Query** whose script is Git-sourced (sibling doc), with the controller's module-path mapping instead of `PYTHONPATH`, a configured heap, schedule, daily restart and error-restart policy (doc 07 §2) |
+| **Python environment** | the module has no pip dependencies beyond `deephaven` and `deephaven.ui` | the worker venv is built from the release's frozen-requirements file (doc 07 §6); the Python minor version is the worker image's |
+| **Exported tables and the UI** | script globals are the tables clients see; `deephaven.ui` dashboards work in Core+ workers | users reach them through the PQ in the Enterprise web UI and the Core+ clients (with ACLs), not through an app-mode panel; the dashboard object is a PQ export; confirm the `deephaven.ui` version shipped in the 1.202601 worker image |
+| **Security** | none | the PQ runs under a service account; `OMS_RAW` / `OMS_TRACE` ACLs must grant it (doc 07 §5); user-table and DIS writes need merge-dispatcher permissions |
+| **Persistence, scheduling, cross-worker tables** | — | Enterprise adds what Community lacks: DIS ingestion with checkpoints, intraday/historical partitions, Data Merge PQs, the Derived Table Writer, Core+ client subscriptions between PQs (doc 02 §8) |
+| **Scale** | the module is correct at any size | at 150 M nodes its `NodeKey` string per node and `merge` of all levels cost ~8 GB extra, which is why the production DAG specializes it (doc 02 D8, doc 06 §1); that is a scale decision, not an Enterprise one |
+
+So the module is the M1 prototype and the reference for the production DAG, and the port is five
+adapter views plus the PQ packaging. Nothing in its table logic is Community-specific.
+
 ## 4. Work breakdown (relative sizes; S < M < L)
 
 | # | Task | Size | Milestone |
@@ -93,7 +114,7 @@ and the version-sensitive surface is one file (doc 07 §10).
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| String ids at double the confirmed volume (doc 06 §1.3 contingency) | one worker does not fit | numeric ids if Q19 allows, else edge sharding (designed, not built, until M4 says so) |
+| Double the confirmed volume with alphanumeric ids (doc 06 §1.3 contingency) | one worker does not fit | edge-family sharding (designed, not built, until M4 says so); numeric surrogates are not an option (Q19, doc 06 §1.4) |
 | Core+ API names differ from this design's (ingester options, Core+ client, DTW wrapper) | M2 slips | `enterprise.py` isolates them; M2's first task is to compile that file against Enterprise 2026.01.054 (Q10) and its Core+ Python package, reading that release's pages for the Kafka ingester, the Core+ client and the Derived Table Writer |
 | Windows/WSL2 Podman for Enterprise dev (fix42 doc 17) | dev-enterprise unstable | Linux VM or a dev EKS namespace |
 | Lag beyond the window (Q7 wrong) | permanently unresolved rows | measured in M1 from captured samples; window is configuration |

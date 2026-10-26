@@ -434,7 +434,8 @@ tables = dag.build_order_tree(topology, {
 
 This is the recommended **M1 prototype**: adapters, mock data and the oracle for the chain
 come almost for free, and the module's dashboard already shows the five-level tree with recon
-columns. What the production form adds: the `Date` window, the aging clock (`TRANSIENT`), the
+columns. It was built on Community; Core+ runs the same engine, so only its inputs and its
+packaging change when it moves (doc 10 §3.1). What the production form adds: the `Date` window, the aging clock (`TRANSIENT`), the
 `CARDINALITY` / `MISSING_CHILD` checks, the Enterprise inputs, the blink transition table, and
 native-id joins without `NodeKey` strings (the generic DAG allocates one string per node for its
 key hash, ~8 GB at 100 M nodes; doc 06 §1).
