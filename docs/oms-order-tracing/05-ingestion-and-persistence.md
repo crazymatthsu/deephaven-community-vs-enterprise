@@ -161,7 +161,17 @@ Cost: heap in the ingester proportional to distinct orders in the partition (doc
 one more table the lineage PQ subscribes to or reads. Phase 1 does without it; the gate is in
 doc 06 §3.
 
-### 4.4 Exactly-once and restart
+### 4.4 Execution feeds (P2b)
+
+Each system's execution reports are ingested the same way from `oms.<x>.execs` into
+`OMS_RAW.Execs<X>` (doc 03 §2.1): a second `kafka_table_writer_options` + `dis.consume` in the
+system's ingester PQ (one DIS can serve several tables it claims), or a separate PQ when the
+execution topic alone saturates a worker. The adapter normalizes the feed's execution-type codes
+to `FILL` / `BUST` / `CORRECT` in the value spec's derived columns, or in the lineage adapter if
+the raw codes are kept. Retention follows the order tables; the lineage PQ reads executions
+only for parents with an aged gap (doc 04 §10), so a day's executions are paged, not resident.
+
+### 4.5 Exactly-once and restart
 
 - Kafka offsets are stored in the DIS checkpoint record, updated atomically with the table
   size; on start the ingester reads the most recent column partition's checkpoint and resumes
@@ -191,7 +201,7 @@ the ingester checkpoints them (latency: the DIS flush interval, typically sub-se
 
 | Store | Written by | Retention (N4 defaults) | Read with |
 |---|---|---|---|
-| intraday partitions, `OMS_RAW.*` | the ingesters | today + `OMS_TRACE_DATE_WINDOW_DAYS` (deleted by the validation PQ after merge) | `db.live_table` |
+| intraday partitions, `OMS_RAW.Orders*` and `Execs*` | the ingesters | today + `OMS_TRACE_DATE_WINDOW_DAYS` (deleted by the validation PQ after merge) | `db.live_table` |
 | historical partitions, `OMS_RAW.*` | **Data Merge** PQ nightly, partition value formula = previous day (`MergeIntradayData`; `force` to re-merge) | 90 days, then the platform's archival | `db.historical_table` |
 | `OMS_TRACE.DriftEvents` | the drift writer (§8), merged nightly like the raw tables | 90 days | both |
 | `OMS_TRACE.DailyDriftSummary` | EOD snapshot (§8) | indefinitely (small) | `db.historical_table` |

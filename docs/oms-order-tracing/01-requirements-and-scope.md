@@ -52,7 +52,7 @@ reached through its B child.
 | R12 | Optional: a tree view of a lineage (A → Bp → Bc → Cp → Cc) for investigation, collapsed by default | §6.4 | one row per node (doc 04 §7) |
 | R13 | Guard against mis-keyed feeds: validate id mapping on a sample and watch key cardinality (one B parent per A, one C parent per B child) before trusting diffs | §8 | doc 09 §6 |
 | R14 | Survive restarts: every component is a persistent query that recovers from durable state without operator action | §10, §11.7 | doc 07, doc 08 |
-| R15 | *Stretch.* Name the **individual executions** that were dropped, not only the edge and quantity | §1 ("identify exactly which executions were dropped") | not derivable from cumulative-quantity states; needs execution reports on both sides of an edge (Q17); see doc 02 §10 |
+| R15 | Name the **individual executions** that were dropped on a broken edge, not only the edge and the quantity. Execution ids do not survive a hop; **quantity, price and transaction time do** (Q17, answered 2026-10-26), so executions are matched on that key with multiset semantics | §1 ("identify exactly which executions were dropped") | a second data path over execution reports, computed **lazily for broken edges only** (doc 02 §10, doc 04 §10); phase P2b |
 
 ## 3. Non-functional requirements
 
@@ -70,6 +70,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | N8 | Security | raw tables readable by the tracing PQs and ops only; derived tables readable by the consuming desks; writes only from merge-dispatcher workers |
 | N9 | Operability | every threshold and window is configuration; scripts are Git-sourced (sibling doc `git-persistent-query-scripts.md`) |
 | N10 | Portability | the lineage/drift logic is Community-Core table operations and runs unchanged in a Core+ worker; only ingestion and persistence are Enterprise-specific |
+| N11 | Execution volume | several execution reports per node per level (hundreds of millions of rows per day at the N1 upper case) are **stored on disk and matched only for parents with an aged gap**, so the execution path's heap is proportional to breaks, not to executions (doc 06 §1.5) |
 
 ## 4. Assumptions the design relies on
 
@@ -87,6 +88,8 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | A10 | One trading day is the natural partition | multi-region sessions need a session-date column |
 | A11 | B and C rows carry an **in-system parent id** column (`ParentOrderId`) that is **null on parent orders and non-null on child orders**; that column alone tells parents from children. *Confirmed 2026-10-26 (Q15).* | — |
 | A12 | A B child and its C parent are 1 : 1 and the C parent carries the B child's id | if the C parent carries the B *parent's* id instead, the `Bc-Cp` edge becomes `Bp-Cp` (1 : n) and B children are reconciled only inside B |
+| A13 | An execution reported on both sides of a hop has the **same quantity, price and transaction time** on both sides, at the configured precision (price to 1e-6, time to the millisecond); its ids differ. *From Q17, 2026-10-26.* | widen the time bucket, or add an as-of match for the residue (doc 04 §10) |
+| A14 | Busts and corrections reference the execution they cancel or replace by **that system's** exec id (`ExecRefId`), and every system reports them | an unpropagated bust shows as an execution-level break, which is the intended reading; a feed without `ExecRefId` cannot net busts and the match keeps the busted fill on that side |
 
 ## 5. Explicitly out of scope
 
@@ -120,6 +123,12 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
    parent within the expected band); cutover requires ≥ 99.9 % resolution on the sample.
 8. **AC8 (N1, N2):** At the agreed volume the update-graph cycle stays ≤ 1 s p99 and heap
    ≤ 70 % of allocation for a full day.
+9. **AC9 (R15):** In AC1's broken book (Bc2's child book short by one 100-share fill), once the
+   gap is aged, `exec_breaks` names the dropped execution on the `Bp-Bc` edge: the B parent's
+   exec id for the `(100, px, time)` key, `Kind = EXEC_MISSING_DOWNSTREAM`, `DroppedQty = 100`,
+   and `exec_breaks_by_edge.Unexplained = 0`. With two identical 100-share fills at the same
+   price and millisecond and one dropped, the row names both candidate exec ids with
+   `Ambiguous = true`.
 
 ## 7. Glossary
 
@@ -155,5 +164,5 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | Q14 | Is `LeavesQty` available in all three? | enables an open-exposure view (doc 14's `RouteGap`) | optional | feed owners |
 | Q15 | In B and C, which field carries the in-system parent id, and how are parents told from children? **Answered 2026-10-26:** `ParentOrderId`, null on parents, non-null on children | A11; the adapter role split | as answered | — |
 | Q16 | Do B and C children also carry the cross-system reference? **Answered 2026-10-26: no** — children carry `ParentOrderId` only, `UpstreamRef` is null on them | children link and route by `ParentOrderId` alone (already the design); no `ROOT_MISMATCH` cross-check is available; `UpstreamRef` non-null on a child is a contract violation the pre-cutover check reports | as answered | — |
-| Q17 | Is **execution-level** identification required (R15)? If so, do execution reports cross the hops with a shared id (`ExecID`/`ExecRefID`), or only quantity/price/time? | a second data path (executions) and a set-difference per edge | not in v1 | business owner |
+| Q17 | Is execution-level identification required, and how do executions match across hops? **Answered 2026-10-26:** execution ids are **not** shared across hops; **quantity, price and transaction time are the same** on both sides | R15 in scope (phase P2b); multiset match on `(Qty, Px, TransactTime)` per broken edge (doc 04 §10); precision and jitter measured pre-cutover (doc 09 §6) | as answered | — |
 | Q18 | Are B's (and C's) parent and child orders on one topic or two? | one or two ingesters per system (doc 05 §4) | one topic, role by `ParentOrderId` | feed owners |

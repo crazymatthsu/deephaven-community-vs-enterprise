@@ -115,6 +115,8 @@ reconciliation PQ are gone; the shard workers are a later phase of the same line
 |---|---|---|---|---|
 | `oms-ingest-a`, `-b`, `-c` | Core+ Kafka ingester in a "Live Query - Merge Server" PQ; in-worker DIS with private storage claiming `OMS_RAW.Orders<X>` | nothing beyond the DIS checkpoint (Kafka offsets, optional lastBy state) | small (2–4 GB; more with a lastBy view) | resumes from the checkpoint offset; exactly-once |
 | `OMS_RAW.OrdersA/B/C` | intraday partitions (`Date`) in DIS storage, served through the Table Data Service; merged nightly | the raw history (R1, R10); B and C hold parents and children | storage | n/a |
+| `oms-ingest-<x>-execs` (P2b) | the same ingester mechanism on `oms.<x>.execs` → `OMS_RAW.Execs<X>` (a second `consume` in the system's ingester PQ, or its own PQ) | DIS checkpoint | small | resumes from the checkpoint |
+| `OMS_RAW.ExecsA/B/C` (P2b) | intraday partitions, `OrderId` a grouping column | execution reports (R15); read lazily by `oms-lineage` for broken edges only | storage | n/a |
 | `oms-lineage` | Live Query (Script) PQ, Core+ Python | the lineage DAG (doc 04): last state, role split, four links, four edges, aging, aggregates | sized by doc 06 §1, 64–128 GB at N1 | full recompute from the `Date` window; recovery time N6 |
 | `oms-drift-writer` | Live Query - Merge Server PQ running a Derived Table Writer on a Barrage subscription to `break_events` | `OMS_TRACE.DriftEvents` | small | DTW resumes from its checkpoint |
 | `oms-trace-ui` | Live Query (Script) PQ with `deephaven.ui`; Core+ client `barrage_subscribe` to aggregates and a filtered node slice | nothing durable | small–medium | re-subscribes |
@@ -140,6 +142,11 @@ reconciliation PQ are gone; the shard workers are a later phase of the same line
    until neither side has moved for the aging threshold (R6).
 6. **Aggregate.** `drift_by_a_order` (per root, one column per edge), `drift_by_symbol`,
    `unresolved_links`, `trace_stats` (R7, R9).
+6b. **Name the executions (P2b).** For each parent with an aged gap, the parent's execution
+   reports and the union of its children's are restricted with `where_in`, netted of busts,
+   keyed on `(Qty, Px, TransactTime)` and compared as multisets; the side with more of a key
+   names the dropped executions, and `Unexplained` says whether the execution picture accounts
+   for the quantity gap (R15, doc 04 §10).
 7. **Persist and alert.** Transitions form a blink table the drift writer appends to
    `OMS_TRACE.DriftEvents`; threshold crossings go to the alert sink (R10, R9).
 8. **Serve.** The UI PQ subscribes to the aggregates and to a node slice for the user's
@@ -180,6 +187,7 @@ reconciliation PQ are gone; the shard workers are a later phase of the same line
 | P0 Community prototype | the lineage DAG on mock and replayed samples; Python reference oracle; 1 M-node sizing run; the fix42 `order_tree_recon` module runs this exact topology out of the box (doc 10 §3) | AC1–AC4 against the oracle; per-node memory measured |
 | P1 Enterprise ingest + lineage | three ingester PQs, `OMS_RAW` schemas, one lineage PQ, nightly merge | AC5–AC7 on UAT |
 | P2 Outputs | drift writer, UI PQ, alert sink, ACLs | desks sign off on attribution (R5) |
+| P2b Executions | execution ingesters, `OMS_RAW.Execs*`, the lazy execution match, `exec_breaks` in the UI and in `DriftEvents` | AC9; pre-cutover match rate at the configured precision ≥ 99.9 % (doc 09 §6) |
 | P3 Scale | load test at N1; shard per edge only if a gate trips | AC8 |
 | P4 Cutover | prod PQs, runbooks, dashboards | doc 10 §6 |
 
@@ -214,14 +222,33 @@ Query, a managed long-running worker.
 | D8 | Native id columns for joins; synthetic `NodeKey` strings only in UI slices | `System + "|" + OrderId` on 100 M rows | 06 §1 |
 | D9 | Role split on `ParentOrderId` inside the adapter: null = parent, non-null = child (Q15, answered 2026-10-26); an empty string is a `NO_LINK` child, never a silently misfiled parent | separate parent/child tables from the feeds; a role/type column | 03 §3, Q18 |
 | D10 | Python Core+ scripts from Git; a Python reference oracle tested row for row | Groovy; untested formulas | 09, 10 |
+| D11 | Execution-level identification by **multiset match on `(Qty, Px, TransactTime)`**, computed **lazily for parents with an aged gap** (`where_in`), busts netted by `ExecRefId` | matching every execution on every edge (O(executions) heap); matching by exec id (ids do not cross hops, Q17) | 02 §10, 04 §10, 06 §1.5 |
 
-## 10. Extension: execution-level identification (R15, Q17)
+## 10. Execution-level identification (R15, Q17)
 
-Cumulative-quantity states can say *which edge* is short and *by how much*; they cannot name
-*which execution* was dropped. If Q17 says that is required: ingest execution reports per
-system (`OMS_RAW.ExecsB`, `ExecsC`, …) keyed by `(OrderId, ExecID)`, and on each edge compute
-the set difference between the parent's executions and the union of its children's, matched by
-a shared execution id when one crosses the hop (`ExecRefID` or a secondary exec id), otherwise
-by `(Qty, Px, time window)`. It is the same per-edge structure with a `where_not_in` instead of
-a sum, and it is additive to this design. It is not in v1 because it doubles the ingested volume
-and depends on a feed property nobody has confirmed.
+Cumulative-quantity states say *which edge* is short and *by how much*. To say *which
+execution*, each system's execution reports are ingested too (`OMS_RAW.Execs<X>`, doc 03 §2.1)
+and compared per edge. Q17 fixes the matching rule: ids do not cross a hop, so an execution is
+the same execution on both sides when its **quantity, price and transaction time** agree at
+the configured precision.
+
+Three design choices keep this affordable and honest:
+
+1. **Lazy.** The comparison runs only for parents that already have an aged quantity gap
+   (`where_in` on `gaps`). Execution rows outnumber order states several to one; a per-key
+   count over all of them would cost heap proportional to executions. Restricted to broken
+   edges it costs heap proportional to breaks, and the raw execution tables stay on disk.
+2. **Multiset.** Two identical fills are two rows: counts per `(ParentId, Qty, PxKey, TimeKey)`
+   on each side are compared, and the difference names how many of that key are missing and
+   on which side. When k of n identical fills are missing the row names all n candidates and
+   flags `Ambiguous`; that is the limit of what the key can say.
+3. **Busts netted first.** A bust or correction removes the execution it references
+   (`ExecRefId`, within its own system) before matching. An unpropagated bust therefore shows
+   up as an execution present on one side only, which is exactly the break it is.
+
+Outputs: `exec_breaks` (one row per edge, parent and key with a non-zero difference, naming
+the dropped exec ids) and `exec_breaks_by_edge` (per broken parent: the gap the executions
+explain and the `Unexplained` residue, non-zero when quantities, prices or times disagree
+rather than executions being missing). Both go to the UI's break panel and, as transitions, to
+`OMS_TRACE.DriftEvents`. The pre-cutover check measures the match rate at exact, 1 ms and 1 s
+precision so the time bucket is set from data, not hope (doc 09 §6).

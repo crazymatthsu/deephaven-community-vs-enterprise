@@ -89,7 +89,7 @@ below the B parent needs root ids to flow between shard families), and adds F15.
 | F12 | Minor | Clock skew: "diff only comparable snapshots" | §8 | Transient propagation gaps page people | Gaps are aged: a difference counts only when neither side has moved for N seconds (doc 04 §5) |
 | F13 | Minor | `symbol`, `side` "from A (authoritative)" | §3.2 | A child working the wrong instrument is invisible | Compare and flag `MISMATCH` (doc 03 §6) |
 | F14 | Minor | "Mapping table publisher death: resolvers buffer briefly" | §8 | A design dependency that shouldn't exist | Gone with F2 |
-| F15 | Moderate | "Identify exactly which executions were dropped" is not derivable from cumulative-quantity states | §1 goal line | Expectation gap with the business: the design names the edge, the book and the quantity, not the execution | Execution-level diff is a separate, additive data path (doc 01 R15/Q17, doc 02 §10) |
+| F15 | Moderate | "Identify exactly which executions were dropped" is not derivable from cumulative-quantity states | §1 goal line | Expectation gap with the business: states name the edge, the book and the quantity, not the execution | Designed as a second path (Q17 answered 2026-10-26): execution reports matched as a multiset on quantity, price and transaction time, lazily for broken edges only (doc 02 §10, doc 04 §10) |
 
 ### F1 — the chain fans out, so diff per edge
 

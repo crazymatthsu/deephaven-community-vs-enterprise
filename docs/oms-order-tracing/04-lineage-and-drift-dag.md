@@ -386,7 +386,111 @@ Every node is a join, a filter or an aggregation. When one `C_CHILD` fill ticks,
 recomputes that row, its `C_PARENT`'s rollup row, that edge row, the affected aggregate rows
 and nothing else.
 
-## 10. Checks the implementation must pass (doc 09 details them)
+## 10. Execution-level identification (R15) — lazy, for broken edges only
+
+§3–§6 say which edge is short and by how much. To say *which executions*, each system's
+execution reports are ingested as `OMS_RAW.Execs<X>` (doc 03 §2.1) and compared per broken
+edge: the parent's executions against the union of its direct children's. Execution ids do not
+survive a hop (Q17); quantity, price and transaction time do, so the key is
+`(Qty, PxKey, TimeKey)` and the comparison is a **multiset** one (two identical fills are two
+rows).
+
+Why lazy: execution rows outnumber order states several to one, and per-key counts over all of
+them would cost heap proportional to executions. Both sides are first restricted with
+`where_in` to the parents that already have an aged gap, so the cost is proportional to breaks
+and the raw execution tables stay on disk.
+
+```python
+PX_SCALE   = int(os.environ.get("OMS_TRACE_EXEC_PX_SCALE", "1000000"))     # 1e-6 price precision
+TIME_MS    = int(os.environ.get("OMS_TRACE_EXEC_TIME_BUCKET_MS", "1"))     # transaction-time precision
+TIME_NANOS = TIME_MS * 1_000_000
+EXEC_KEY   = ["Qty", "PxKey", "TimeKey"]
+
+def effective_execs(table: str):
+    """Fills, with busted ones removed and corrections standing as the corrected fill."""
+    t = raw(table)
+    fills = t.where("ExecType == `FILL` || ExecType == `CORRECT`")
+    cancels = t.where("ExecType == `BUST` || ExecType == `CORRECT`").view(["OrderId", "ExecRefId"])
+    return fills.where_not_in(cancels, cols=["OrderId", "ExecId = ExecRefId"]).view([
+        "OrderId", "ExecId", "Qty = LastQty",
+        f"PxKey = (long) Math.round(LastPx * {PX_SCALE})",
+        f"TimeKey = lowerBin(TransactTime, {TIME_NANOS}L)",
+        "RecvTs",
+    ])
+
+execs_a, execs_b, execs_c = effective_execs("ExecsA"), effective_execs("ExecsB"), effective_execs("ExecsC")
+
+def exec_breaks_for(edge_name: str, parent_execs, child_execs, child_links):
+    # 1. only the parents with an aged gap on this edge
+    parents = gaps.where(f"Edge == `{edge_name}` && IsDrift").view(["OrderId", "RootId", "FillGap"])
+    # 2. their executions, and their direct children's executions, tagged with the parent id
+    pe = parent_execs.where_in(parents, cols=["OrderId"]).view(["ParentId = OrderId", "ExecId"] + EXEC_KEY)
+    kids = child_links.where_in(parents, cols=["LinkId = OrderId"]).view(["OrderId", "ParentId = LinkId"])
+    ce = (child_execs.where_in(kids, cols=["OrderId"])
+          .natural_join(kids, on=["OrderId"], joins=["ParentId"])
+          .view(["ParentId", "ChildOrderId = OrderId", "ExecId"] + EXEC_KEY))
+    # 3. multiset counts per key on each side, keeping the ids behind each count
+    p_counts = pe.agg_by([agg.count_("ParentCount"), agg.group(["ParentExecIds = ExecId"])], by=["ParentId"] + EXEC_KEY)
+    c_counts = ce.agg_by([agg.count_("ChildCount"), agg.group(["ChildExecIds = ExecId", "ChildOrderIds = ChildOrderId"])],
+                         by=["ParentId"] + EXEC_KEY)
+    keys = merge([p_counts.view(["ParentId"] + EXEC_KEY), c_counts.view(["ParentId"] + EXEC_KEY)]).select_distinct()
+    # 4. the difference per key names the executions and the side that lacks them
+    return (
+        keys.natural_join(p_counts, on=["ParentId"] + EXEC_KEY, joins=["ParentCount", "ParentExecIds"])
+        .natural_join(c_counts, on=["ParentId"] + EXEC_KEY, joins=["ChildCount", "ChildExecIds", "ChildOrderIds"])
+        .natural_join(parents, on=["ParentId = OrderId"], joins=["RootId", "FillGap"])
+        .update_view([
+            "ParentCount = isNull(ParentCount) ? 0L : ParentCount",
+            "ChildCount = isNull(ChildCount) ? 0L : ChildCount",
+            "Diff = ChildCount - ParentCount",
+            f"Edge = `{edge_name}`",
+            "Kind = Diff < 0 ? `EXEC_MISSING_DOWNSTREAM` : `EXEC_UNBOOKED_UPSTREAM`",
+            "DroppedQty = Math.abs(Diff) * Qty",
+            f"Px = PxKey / (double) {PX_SCALE}",
+            "DroppedExecIds = Diff < 0 ? ParentExecIds : ChildExecIds",            # the side that has more
+            "Ambiguous = Math.abs(Diff) < (Diff < 0 ? ParentCount : ChildCount)",  # k of n identical fills
+        ])
+        .where("Diff != 0")
+    )
+
+exec_breaks = merge([
+    exec_breaks_for("A-Bp",  execs_a, execs_b, links_bp),
+    exec_breaks_for("Bp-Bc", execs_b, execs_b, links_bc),   # in-system edges: both sides from one table
+    exec_breaks_for("Bc-Cp", execs_b, execs_c, links_cp),
+    exec_breaks_for("Cp-Cc", execs_c, execs_c, links_cc),
+])
+
+# Does the execution picture account for the quantity gap? FillGap is parent minus children,
+# so a key the parent has and the children lack (Diff < 0) explains +Qty of it.
+exec_breaks_by_edge = (
+    exec_breaks.update_view(["ExplainedQty = -Diff * Qty", "AmbiguousKey = Ambiguous ? 1 : 0"])
+    .agg_by([agg.sum_(["ExplainedGap = ExplainedQty", "AmbiguousKeys = AmbiguousKey"]), agg.count_("Keys")],
+            by=["Edge", "ParentId", "RootId"])
+    .natural_join(gaps.view(["Edge", "ParentId = OrderId", "FillGap"]), on=["Edge", "ParentId"], joins=["FillGap"])
+    .update_view(["Unexplained = FillGap - ExplainedGap"])
+)
+```
+
+Reading the outputs:
+
+- `EXEC_MISSING_DOWNSTREAM` with `DroppedExecIds = [B-EXEC-77]` on `Bc-Cp`: B's child order
+  booked execution `B-EXEC-77` and C has no execution with the same quantity, price and time
+  under the matching C parent — **C dropped that execution** (doc 09's `exec_dropped_at_c`).
+- `Ambiguous = true` with two ids: two identical fills, one missing; the key cannot say which.
+- `Unexplained != 0`: the quantity gap is not whole missing executions. Either a quantity,
+  price or time differs across the hop (a jitter in `TransactTime` beyond the bucket, a price
+  rounded differently), or a bust was netted on one side only. The pre-cutover report measures
+  the match rate at exact, 1 ms and 1 s precision so `OMS_TRACE_EXEC_TIME_BUCKET_MS` is set
+  from data (doc 09 §6); if jitter is real, the residue can be matched as a second stage with
+  an as-of join inside a tolerance, left out of v1 on purpose.
+- `where_in` re-filters the execution tables when the candidate set changes. `OrderId` is a
+  grouping column on `OMS_RAW.Execs*` so the engine can use the index on merged data; the
+  intraday cost per candidate change is measured in M1, and if it approaches a column scan at
+  the day's size the execution path moves to its own PQ fed by `gaps` over Barrage (doc 06
+  §1.5). `OMS_TRACE_EXEC_SCOPE=all` (every edge, every parent) exists for small deployments
+  and is O(executions) heap.
+
+## 11. Checks the implementation must pass (doc 09 details them)
 
 1. AC1–AC4 against the Python reference oracle, row for row, on the scenario catalog.
 2. The telescoping identity over the four edges on every fully linked root (doc 03 §6).
@@ -397,3 +501,6 @@ and nothing else.
    1 M-node run).
 6. The role split files a null parent id as a parent and any non-null one (an empty string
    included) as a child; an empty string surfaces as `NO_LINK`, never as a misfiled parent.
+7. `exec_breaks` names the dropped execution in AC9's book, flags `Ambiguous` for k-of-n
+   identical fills, nets a propagated bust to nothing and reports an unpropagated one, and
+   `ExplainedGap + Unexplained == FillGap` on every broken parent.

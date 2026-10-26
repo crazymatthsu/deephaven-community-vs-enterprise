@@ -53,6 +53,14 @@ L1 asserts the oracle; L2 asserts the engine equals the oracle. "A(1000/1000)" r
 | `midnight` | Bc on `Date` D, Cp on D + 1, window 2 | `LINKED` |
 | `window_exceeded` | Bc on D, Cp on D + 2, window 2 | `UNRESOLVED` on D + 2 (documented limitation; sets Q7) |
 | `large_fanout` | A → Bp → 50 Bc → 50 Cp → 10 Cc each (2 500 Cc rows) | all `NONE`; rollup counts 50, 1 and 10 |
+| `exec_dropped_at_c` (P2b) | `missing_at_c` with executions: Bc2 has fills (100, 10.00, T1), (300, 10.01, T2); Cp2 has only the second | aged: `exec_breaks` on `Bc-Cp` for Bc2: key (100, 10.00, T1), `ParentCount 1`, `ChildCount 0`, `EXEC_MISSING_DOWNSTREAM`, `DroppedExecIds = [Bc2's exec id]`, `DroppedQty 100`; `Unexplained 0` (AC9) |
+| `exec_identical_fills_one_dropped` (P2b) | Bc2 has two fills (100, 10.00, T1) with different exec ids; Cp2 has one | one row, `Diff −1`, `DroppedExecIds` lists both, `Ambiguous = true`, `DroppedQty 100` (AC9) |
+| `exec_unbooked_upstream` (P2b) | Cc children have a fill the Cp never booked | `Cp-Cc` on Cp: `EXEC_UNBOOKED_UPSTREAM`, `DroppedExecIds` = the Cc exec id, `ChildOrderIds` names the child |
+| `exec_bust_propagated` (P2b) | a fill and its bust reported in B and in C | nets to nothing on both sides; no exec rows, no quantity gap |
+| `exec_bust_not_propagated` (P2b) | the bust reported in C only | C's cum drops; `Bc-Cp` quantity gap `+Qty MISSING_DOWNSTREAM`; `exec_breaks` names the busted fill still present on B's side |
+| `exec_correction` (P2b) | C corrects a fill's price; B reports the corrected fill | nets to the corrected fill on both sides; no rows |
+| `exec_time_jitter` (P2b) | the same fill with `TransactTime` 0.6 ms apart across the hop, bucket 1 ms, landing in different buckets | two one-sided keys, `Unexplained != 0`; with `OMS_TRACE_EXEC_TIME_BUCKET_MS=10` they pair and the rows vanish (documents the knob) |
+| `exec_lazy_scope` (P2b) | a clean book with thousands of executions | `exec_breaks` is empty and the execution-side `where_in` candidate tables are empty (asserted sizes) |
 
 The mock generator (`oms_trace.mockdata`) builds every scenario plus N random healthy families
 with realistic fan-out, so the "no drift" assertion runs over a book, not a toy. Doc 14's
@@ -70,6 +78,7 @@ starting point.
 5. **Monotone healing**: a parent's arrival never increases the unresolved count.
 6. **Direct children only**: changing a `C_CHILD` never changes `edge_a_bp`'s or `edge_bp_bc`'s `ChildCumQty`.
 7. **Root propagation**: every node with `RootState = RESOLVED` has the `RootId` of the A row reachable by following `LinkId` four times at most; `root_unresolved` is exactly the set of linked nodes with a broken chain above.
+8. **Execution accounting** (P2b): on every broken parent `ExplainedGap + Unexplained == FillGap`, and `Σ DroppedQty` over `EXEC_MISSING_DOWNSTREAM` rows minus `Σ` over `EXEC_UNBOOKED_UPSTREAM` rows equals `ExplainedGap`.
 
 ## 4. Live tests in the embedded engine (L2)
 
@@ -118,6 +127,13 @@ topic (or a day of `OMS_RAW` exported to files) and prints, per system:
 - **cardinality per hop**: B parents per A and C parents per B child (both ≈ 1, A4); children
   per parent inside B and C (Q2); flags > 1 000 as a probable key error;
 - `CumQty` monotonicity per order (busts counted; Q8);
+- **execution match rate per hop** (P2b): the fraction of a sample's executions on the child
+  side that find a `(Qty, Px, TransactTime)` twin on the parent side at exact, 1 ms and 1 s
+  precision, and the fraction of orders with two or more identical keys (the ambiguity rate);
+  `OMS_TRACE_EXEC_TIME_BUCKET_MS` is set from this report, and cutover requires ≥ 99.9 % at the
+  chosen precision on a window with no known breaks;
+- `ExecRefId` present on every `BUST`/`CORRECT` and resolving to an earlier `ExecId` of the same
+  order (A14);
 - symbol/side coding per system (A7);
 - `SeqNo`/`EventTs` ordering versus arrival (A8).
 
@@ -152,3 +168,4 @@ an expected observation.
 | AC6 | L4 step 2 |
 | AC7 | L5 report |
 | AC8 | L3 sizing, L4 step 8 |
+| AC9 | `exec_dropped_at_c`, `exec_identical_fills_one_dropped` (L1, L2), L5 match-rate report |

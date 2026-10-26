@@ -63,6 +63,19 @@ Plus a fixed ~4–8 GB for the JVM, Barrage buffers and Python. The expected cas
 4. **Persisted lastBy in the ingesters** (doc 05 §4.3) moves the last-by hash tables out of
    the lineage worker and makes its start-up a subscription instead of a scan.
 
+### 1.5 The execution path (P2b)
+
+| Scope | What is resident | Heap | Verdict |
+|---|---|---|---|
+| `aged_gaps` (default): parents with an aged quantity gap only | per broken parent: its executions and its children's, as per-key counts (tens of rows) plus the `where_in` filter state | ∝ breaks; negligible next to §1.3 | the design |
+| `all`: every parent on every edge | per-key counts for every execution at every level, ~100–150 B each | at 300 M executions/day: 30–45 GB, plus the join state | only in its own PQ (fed by the lineage PQ's `links_*` over Barrage) and only if the business needs every execution matched, not just the dropped ones |
+
+The raw execution tables are on disk in either case. The cost to measure in M1 is the
+`where_in` re-filter when the candidate set changes: with `OrderId` as a grouping column the
+engine can use the index on merged data; on intraday data a candidate change may scan the
+`OrderId` column once per change. If that scan approaches the day's size at peak break rates,
+the execution path moves to its own PQ so the lineage update graph never waits on it (G2).
+
 ## 2. Time: the update graph and start-up
 
 - A Core+ worker runs one update graph on one thread. Per cycle it recomputes the rows that

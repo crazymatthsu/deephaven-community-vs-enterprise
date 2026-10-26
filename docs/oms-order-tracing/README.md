@@ -30,8 +30,10 @@ its direct children), treat a child whose parent has not arrived as a **state** 
 the parent lands rather than a buffer to retry, ingest each feed through a **Core+ Kafka ingester with an
 in-worker Data Import Server**, run the whole lineage in **one worker** until a measured gate
 trips, and shard **per edge by the parent's id** when it does, with root ids flowing down
-between shard families as partitioned maps. The resolver, the Barrage-published mapping table
-and the pending-buffer PQ of the original design are not needed.
+between shard families as partitioned maps. Executions that were dropped are named by matching
+execution reports on quantity, price and transaction time (ids do not cross hops), computed only
+for edges that already show an aged gap. The resolver, the Barrage-published mapping table and
+the pending-buffer PQ of the original design are not needed.
 
 Related: [`../git-persistent-query-scripts.md`](../git-persistent-query-scripts.md) (how the
 PQ scripts get from Git to the controller) and the `deephaven-fix42-dashboard` repository's

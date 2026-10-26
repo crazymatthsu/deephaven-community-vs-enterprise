@@ -13,6 +13,7 @@ Phased delivery of docs 02–09, with the module layout, what is reused from the
 | **M1 Community prototype** | `oms_trace` package: `config`, `adapters`, `dag`, `reference`, `mockdata`, `app`; L1 + L2 tests; Community compose with mock and file sources; the 1 M-row sizing run | AC1–AC4 against the oracle; doc 06 §1.3 filled with measured bytes; `trace_check` run on a captured sample (AC7 dry run) | M0 (can start on defaults) |
 | **M2 Enterprise ingest and lineage** | `OMS_RAW` schemas, DIS routing, `ingest.py`, `lineage.py` as PQs on dev-enterprise; Git repo wired to the controller; nightly merge/validation | L4 steps 1–3, 5, 6 on dev-enterprise | M1, platform access |
 | **M3 Outputs** | `break_events` listener, `drift_writer`, `OMS_TRACE` schemas, EOD summary, `ui.py` dashboard, alert sink, ACLs | L4 step 4, 7; desks sign off on `MissedBy` attribution on real UAT data (R5) | M2 |
+| **M3b Executions** | `OMS_RAW.Execs*` schemas and ingesters, `effective_execs`, the lazy `exec_breaks` / `exec_breaks_by_edge` path, UI break panel, `DriftEvents` transitions; `trace_check` match-rate report | AC9 against the oracle and on UAT; match rate ≥ 99.9 % at the chosen precision on a clean window; `where_in` cost measured | M3 |
 | **M4 Scale and hardening** | full-day UAT run at agreed volume; doc 06 gates evaluated; shard PQs and collector only if a gate trips; runbooks R1–R7 rehearsed; N6 measured | AC5, AC6, AC8; doc 08 R2 filled | M3 |
 | **M5 Production cutover** | prod PQs, ACLs, dashboards, on-call handover; `trace_check` report attached | one week of prod with no unexplained alerts | M4 |
 
@@ -83,6 +84,7 @@ and the version-sensitive surface is one file (doc 07 §10).
 | 9 | `events.py`, `drift_writer`, `OMS_TRACE` schemas, EOD summary | M | M3 |
 | 10 | `ui_slice.py`, `dashboard.py`, `ui.py` PQ with Core+ client subscription | L | M3 |
 | 11 | `alerts.py`, thresholds, ACLs | S | M3 |
+| 11b | Execution ingesters and schemas, `effective_execs`, `exec_breaks`, oracle twin and L1/L2 tests, UI panel, match-rate report in `trace_check` | L | M3b |
 | 12 | UAT full-day run, gates, runbook rehearsal, N6 | M | M4 |
 | 13 | Shard PQs + collector (only if a gate trips) | L | M4 |
 | 14 | Prod rollout, handover | S | M5 |
@@ -98,6 +100,8 @@ and the version-sensitive surface is one file (doc 07 §10).
 | Lag beyond the window (Q7 wrong) | permanently unresolved rows | measured in M1 from captured samples; window is configuration |
 | Desks disagree with attribution semantics (`MissedBy`) | rework of doc 03 §6 | M3 sign-off on real data before M4 |
 | Barrage subscription of a large table from the UI | lineage worker pauses | doc 07 §4 rule; UI subscribes to slices only; code review checks subscribed tables' sizes |
+| `TransactTime` jitter across hops larger than the bucket | execution rows fail to pair; `Unexplained` noise | the match-rate report sets the bucket before cutover; an as-of residue match is the designed follow-up (doc 04 §10) |
+| `where_in` re-filter cost on intraday execution tables at peak break rates | lineage cycle time | measured in M3b; the execution path moves to its own PQ if it approaches a column scan (doc 06 §1.5) |
 
 ## 6. Definition of done
 

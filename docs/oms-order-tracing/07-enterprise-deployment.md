@@ -21,6 +21,7 @@ adds what is specific to order tracing.
 | PQ | Type | Dispatcher | Schedule | Heap (start) | Restart policy | Depends on | Script (Git path) |
 |---|---|---|---|---|---|---|---|
 | `oms-ingest-a` / `-b` / `-c` | Live Query - Merge Server | merge | Continuous; daily restart 00:05 `OMS_TRACE_TZ` (optional with `partition_func`) | 4 GB (8–16 GB with `LastByView`) | error restart attempts 5, delay 30 s | schemas, DIS `oms_ingest_<x>` | `queries/oms_trace/ingest.py` (`OMS_SYSTEM` env) |
+| `oms-ingest-<x>-execs` (P2b) | Live Query - Merge Server | merge | as the order ingesters | 4 GB | as the order ingesters | DIS `oms_ingest_<x>` claiming `OMS_RAW.Execs<X>` | `queries/oms_trace/ingest.py` (`OMS_SYSTEM`, `OMS_FEED=execs`) |
 | `oms-lineage` | Live Query (Script) | query | Continuous; daily restart 00:15 (rolls the `Date` window) | doc 06 §1.3 ÷ 0.7 (e.g. 96 GB expected case, string ids) | error restart attempts 3, delay 60 s; init timeout ≥ 2 × measured N6 | the three ingesters running (Dependent schedule or just "start after") | `queries/oms_trace/lineage.py` |
 | `oms-drift-writer` | Live Query - Merge Server | merge | Continuous; daily restart 00:20 | 4 GB | restart attempts 5 | `oms-lineage` (Dependent), DIS `oms_trace` | `queries/oms_trace/drift_writer.groovy` (or `.py` if the DTW wrapper exists) |
 | `oms-trace-ui` | Live Query (Script) | query | Continuous; daily restart 00:25 | 8–16 GB | restart attempts 5; 1 spare if the desk needs it | `oms-lineage` | `queries/oms_trace/ui.py` |
@@ -141,6 +142,7 @@ properties) or `oms_trace.config` defaults.
 | `OMS_TRACE_CLOCK_SEC` | `30` | lineage | aging clock period |
 | `OMS_TRACE_QTY_TOL` | `0` | lineage | tolerance |
 | `OMS_TRACE_ALERT_URL` | — | lineage | HTTP sink for threshold crossings (Q9) |
+| `OMS_TRACE_EXEC_PX_SCALE` / `_EXEC_TIME_BUCKET_MS` / `_EXEC_SCOPE` | `1000000` / `1` / `aged_gaps` | lineage | execution match precision and scope (doc 03 §8) |
 | `OMS_TRACE_SHARD_COUNT` / `_SHARD_INDEX` / `_EDGE` | `1` / `0` / — | shard PQs | P3 |
 | `DH_CONNECTION_JSON_URL`, `DH_UI_KEYFILE` | — | UI, writer, collector | Core+ client access to `oms-lineage` |
 

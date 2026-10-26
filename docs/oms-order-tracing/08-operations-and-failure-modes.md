@@ -24,6 +24,9 @@ Replaces sections 8 and 11.7 of the source document for the design in docs 02–
 | Re-keyed ids (A1/A5 fail) | orphans or mislinks | none | the id-history index (doc 04 §2, generic path) | resolution rate in `trace_stats` drops |
 | Schema drift in a feed (new/renamed field) | rejects rise; or a column reads null | rows rejected until fixed | fix the value spec; replay the partition (R1) | reject rate |
 | Clock skew between OMS and ingesters | none: aging uses `RecvTs` | — | — | — |
+| Execution feed lags the order-state feed (or the reverse) in one system | `exec_breaks` briefly shows a key on one side only; `Unexplained` moves while states and executions settle | none | nothing; both are aged by the same quantity gap | only if it persists past the aging threshold |
+| `TransactTime` or price differs across a hop beyond the configured precision | the quantity gap is real but `Unexplained != 0` and the execution rows do not pair up | none | widen `OMS_TRACE_EXEC_TIME_BUCKET_MS` / `PX_SCALE` from the match-rate report; a residue as-of match is the designed follow-up (doc 04 §10) | `exec_breaks_by_edge.Unexplained != 0` aged |
+| A bust is reported in one system only | an execution-level break naming the busted fill on the side that still has it; the quantity gap agrees | none | it is the finding | as any exec break |
 | Update-graph stall (a long cycle) | views lag | none | find the operator (performance tables); usually a materialized column or a Python callback | cycle p99 > N2 |
 | Barrage snapshot on UI start on a large table | lineage worker pauses while building the snapshot | none | subscribe to small tables only (doc 07 §4) | cycle spike at UI restarts |
 | Midnight rollover | new `Date` partition; the window includes tomorrow so no gap | none | daily restarts drop the oldest day | partition count per table |
@@ -44,6 +47,7 @@ row in `break_events` so it lands in `DriftEvents`). Defaults; tune after the fi
 |---|---|---|---|---|
 | Unresolved links older than the alert age | `unresolved_links.where("Alerted")` count per system | > 0 | > 100 or any older than 4 h | one alert per (System, OrderId) crossing; summary every 15 min while non-zero |
 | C parents versus B children | `trace_stats.CParentsMinusBChildren` | ≠ 0 for > 10 min | < −100 (B children never reaching C) | per crossing |
+| Unexplained execution residue | `exec_breaks_by_edge.where("Unexplained != 0")` count | > 0 for > 5 min | > 10 % of broken parents (the match precision is wrong for the feed) | per edge |
 | Drift quantity by edge | `trace_stats.MissingDownstreamQty<Edge>`, `UnbookedUpstreamQty<Edge>` | > 0 for > 5 min | > threshold agreed with the desks (Q9) | per edge, re-alert on 2× growth |
 | Drift count by symbol | `drift_by_symbol.Breaks` | any new symbol | > 10 symbols | per symbol |
 | Stale system | `now() − max(RecvTs)` per system during market hours | > 60 s | > 5 min | per system |
@@ -76,10 +80,12 @@ init (doc 06 §8). Record the measured value here after M3: `__ min at __ M raw 
 restart exceeds the initialization timeout, raise the timeout, then apply doc 05 §4.3.
 
 **R3 — Investigate a drift row.** From `drift_edges` take `Edge`, `System`, `OrderId`,
-`RootId`. Then (Core+ Python console, §5): the parent's and children's current states, the
-raw message history of each from `OMS_RAW` for the day, and the `DriftEvents` transitions for
-the node. The `MissedBy` column already names the system; the raw history shows the message the
-system never sent (or sent with a lower `CumQty`).
+`RootId`. `exec_breaks.where("Edge == ... && ParentId == ...")` names the dropped executions
+(`DroppedExecIds`, `Kind`, `Ambiguous`) and `exec_breaks_by_edge` says whether they account for
+the whole gap (`Unexplained == 0`). Then (Core+ Python console, §5): the parent's and children's
+current states, the raw order and execution history of each from `OMS_RAW` for the day, and the
+`DriftEvents` transitions for the node. The `MissedBy` column already names the system; the raw
+history shows the report the system never sent.
 
 **R4 — Unresolved spike.** `unresolved_links` grouped by `System`, `Date`, `Alerted`: a spike
 of C rows with references to B ids that never appear points at a B ingestion gap (check
@@ -138,6 +144,13 @@ db.historical_table("OMS_TRACE", "DailyDriftSummary").where(["Date == `2026-10-2
 
 # aged gaps only, as of now
 drift_edges.where("GapAgeSec > 300").sort_descending(["FillGap"])
+
+# the executions C dropped under one B child, and whether they explain the whole gap
+exec_breaks.where(["Edge == `Bc-Cp`", "ParentId == `B-00777`"])
+exec_breaks_by_edge.where(["Edge == `Bc-Cp`", "ParentId == `B-00777`"])
+
+# the raw execution history of that B child for the day (busts and corrections included)
+db.live_table("OMS_RAW", "ExecsB").where(["Date in `2026-10-25`, `2026-10-24`", "OrderId == `B-00777`"]).sort(["TransactTime"])
 ```
 
 `db.live_table` returns intraday partitions, `db.historical_table` merged ones; a `Date` filter

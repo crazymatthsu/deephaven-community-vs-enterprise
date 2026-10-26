@@ -70,6 +70,28 @@ If B or C publish parents and children on two topics (Q18), they land in two tab
 (`OrdersBParent`, `OrdersBChild`) and the adapter `merge`s them before `last_by`; nothing else
 changes.
 
+### 2.1 Raw execution tables — `OMS_RAW.ExecsA`, `ExecsB`, `ExecsC` (P2b)
+
+One row per execution report as received. Same schema for all three systems.
+
+| Column | Type | Null | Meaning |
+|---|---|---|---|
+| `Date` | String (partitioning) | no | assigned from `RecvTs` |
+| `OrderId` | String (grouping) | no | the order in this system the execution belongs to (parent or child) |
+| `ExecId` | String | no | this system's execution id; **not** comparable across systems (Q17) |
+| `ExecType` | String | no | `FILL`, `BUST`, `CORRECT` (normalized from the feed's codes in the adapter) |
+| `ExecRefId` | String | `FILL`: null; `BUST`/`CORRECT`: the `ExecId` it cancels or replaces | within this system (A14) |
+| `LastQty` | long | no | executed quantity of this report |
+| `LastPx` | double | no | execution price |
+| `TransactTime` | Instant | no | the execution's time as the executing venue reported it — the same on every hop (Q17) |
+| `EventTs`, `RecvTs` | Instant | `EventTs` yes, `RecvTs` no | as for orders |
+| `Symbol`, `Side` | String | no | for display and sanity checks |
+| `KafkaPartition`, `KafkaOffset` | int, long | no | provenance |
+
+`OrderId` is a grouping column so the lazy `where_in` of doc 04 §10 can use the index on merged
+data; the intraday cost is measured in M1 (doc 06 §1.5). The match key derived in the worker is
+`(Qty = LastQty, PxKey = round(LastPx × PX_SCALE), TimeKey = lowerBin(TransactTime, TIME_BUCKET))`.
+
 ## 3. The adapter contract (canonical node columns)
 
 The lineage DAG never reads `OMS_RAW` columns directly. One `where` + `view` per **level**
@@ -163,6 +185,8 @@ clock (doc 04 §5):
 | `root_unresolved` | nodes `LINKED` but `RootState = UNRESOLVED` | `Level`, `System`, `OrderId`, `LinkId`, `CumQty` — informational; the alert is on the unresolved node above |
 | `break_events` | **blink**: one row per node whose `BreakKind` or `ParentState` changed this cycle | `Ts`, `Level`, `System`, `OrderId`, `RootId`, `Edge`, `From`, `To`, `FillGap`, `GapAgeSec` |
 | `trace_stats` | one row | per level: `Nodes`, `Unresolved`, `UnresolvedAlerted`, `MaxUnresolvedAgeSec`, `LastUpdate`; per edge: `Gaps`, `Drift`, `MissingDownstreamQty`, `UnbookedUpstreamQty`; `BChildren`, `CParents`, `CParentsMinusBChildren` (the 1 : 1 check as a count); `WindowDates`; cycle time |
+| `exec_breaks` (P2b) | one row per `Edge`, broken parent and `(Qty, Px, TimeKey)` with a non-zero count difference | `Edge`, `ParentId`, `RootId`, `Qty`, `Px`, `TimeKey`, `ParentCount`, `ChildCount`, `Diff = ChildCount − ParentCount`, `Kind` (`EXEC_MISSING_DOWNSTREAM` when the parent has more, `EXEC_UNBOOKED_UPSTREAM` when the children have more), `DroppedQty = |Diff| × Qty`, `DroppedExecIds` (the exec ids on the side with more), `ChildOrderIds`, `Ambiguous` (k of n identical fills) |
+| `exec_breaks_by_edge` (P2b) | one row per `Edge`, broken parent | `RootId`, `FillGap`, `ExplainedGap = Σ (−Diff × Qty)`, `Unexplained = FillGap − ExplainedGap`, `Keys`, `AmbiguousKeys` |
 | `trace_nodes` | UI only, over a **selection**: one row per node of the selected roots, all five levels | §3 columns + `NodeKey`, `ParentKey`, `RootId`, `Depth`, `FillGap`, `BreakKind` |
 | `trace_tree` | `trace_nodes.tree("NodeKey", "ParentKey", promote_orphans=True)` | |
 
@@ -213,7 +237,18 @@ InternalB = Σ GapBpBc                    InternalC = Σ GapCpCc
 ```
 
 So `drift_by_a_order` is the source document's "the number system A needs to see", with the
-system **and the book** named. "Which executions" (R15) is a separate data path (doc 02 §10).
+system **and the book** named.
+
+**Execution-level kinds (P2b, `exec_breaks`).** Evaluated per broken parent and match key:
+
+| `Kind` | Condition | Meaning |
+|---|---|---|
+| `EXEC_MISSING_DOWNSTREAM` | `ParentCount > ChildCount` | the parent's book has an execution the children's book does not: **the children's system dropped it**; `DroppedExecIds` are the parent's exec ids |
+| `EXEC_UNBOOKED_UPSTREAM` | `ChildCount > ParentCount` | the children executed something the parent never booked; `DroppedExecIds` are the children's exec ids |
+| `EXEC_UNEXPLAINED` (on `exec_breaks_by_edge`) | `Unexplained != 0` | the quantity gap is not accounted for by whole missing executions: quantities, prices or times disagree across the hop, or a bust was netted on one side only |
+
+`Ambiguous` is set when fewer than all of the identical fills for a key are missing: the row
+names every candidate, which is the most the key can say.
 
 ## 7. Keys, types and null rules
 
@@ -238,3 +273,6 @@ system **and the book** named. "Which executions" (R15) is a separate data path 
 | `OMS_TRACE_EXPECT_ONE_EDGES` | `A-Bp,Bc-Cp` | the 1 : 1 edges (A4) |
 | `OMS_TRACE_PARENT_ID_COLUMN` | `ParentOrderId` | the in-system parent id column (Q15, confirmed) |
 | `OMS_TRACE_TZ` | `America/New_York` | `Date` assignment and the daily window |
+| `OMS_TRACE_EXEC_PX_SCALE` | `1000000` | price precision for the execution match key (1e-6) |
+| `OMS_TRACE_EXEC_TIME_BUCKET_MS` | `1` | transaction-time precision for the execution match key; set from the pre-cutover match-rate report |
+| `OMS_TRACE_EXEC_SCOPE` | `aged_gaps` | `aged_gaps` (lazy, the default) or `all` (every edge; O(executions) heap, needs its own PQ — doc 06 §1.5) |
