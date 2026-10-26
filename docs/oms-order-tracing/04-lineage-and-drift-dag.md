@@ -2,8 +2,9 @@
 
 The Deephaven table graph that turns three raw tables into the doc 03 outputs for the
 five-level chain `A_ROOT → B_PARENT → B_CHILD → C_PARENT → C_CHILD`. It is written for a
-Core+ Python worker; every operation is Community Core, so the same code runs in a Community
-server for the prototype (doc 10 M1) with the three source tables swapped.
+Core+ Python worker on Deephaven Enterprise 2026.01.054 (release line 1.202601, Community Core
+42.5 engine, Q10); every operation is Community Core, so the same code runs in a Community
+server of that engine version for the prototype (doc 10 M1) with the three source tables swapped.
 
 The structure is the one the fix42 repo's doc 14 proved for Raptor → algo → router, which is
 this topology one for one (client / algo parent / algo child / router parent / router child).

@@ -13,8 +13,8 @@ the Deephaven DAG equals the oracle row for row.
 | Layer | Runs where | Needs | Proves |
 |---|---|---|---|
 | L1 oracle unit tests | any Python 3.10+, no Deephaven | `oms_trace.reference`, `oms_trace.mockdata` | the semantics of doc 03 §6 on every scenario; the two identities |
-| L2 embedded engine | `deephaven-server` wheel in a venv (the fix42 repo's `*_DH_TEST=1` pattern) | the DAG module | the DAG ≡ oracle, row for row, on static books; live healing with keyed input tables |
-| L3 Community end to end | Community server in Podman, mock or replayed Kafka | `OMS_TRACE_SOURCE=kafka|files` | the app entry, the UI, sizing at 1 M rows |
+| L2 embedded engine | `deephaven-server` wheel in a venv (the fix42 repo's `*_DH_TEST=1` pattern), pinned to **42.5**, the Community Core version Enterprise 1.202601 bundles (Q10) | the DAG module | the DAG ≡ oracle, row for row, on static books; live healing with keyed input tables; the same engine version as production |
+| L3 Community end to end | Community server in Podman (`deephaven/server:42.5`, the engine of the target release), mock or replayed Kafka | `OMS_TRACE_SOURCE=kafka|files` | the app entry, the UI, sizing at 1 M rows |
 | L4 Enterprise integration | dev-enterprise / UAT | the ingesters, DIS, PQs | AC5–AC8, replay, midnight, merge |
 | L5 pre-cutover validation | UAT with real feeds | `oms_trace.trace_check` CLI | AC7: the feeds mean what the adapters assume |
 

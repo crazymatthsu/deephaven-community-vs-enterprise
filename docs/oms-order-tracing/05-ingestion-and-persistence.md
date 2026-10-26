@@ -300,6 +300,7 @@ The same adapters and DAG run on a Community server with three inputs swapped in
 
 ## 11. References (official pages the design relies on)
 
+- Release notes for the installed line, Deephaven Enterprise 1.202601 (build 2026.01.054): `https://deephaven.io/enterprise/docs/` → Release Notes, Version 1.202601, and its detailed version log
 - Ingest Kafka Data (Core+): `https://deephaven.io/enterprise/docs/data-guide/streaming/coreplus-kafka/`
 - lastBy ingesters in a Core+ worker: `https://deephaven.io/enterprise/docs/data-guide/streaming/coreplus-lastby/`
 - Data Import Server: `https://deephaven.io/enterprise/docs/data-guide/dis/`

@@ -41,8 +41,10 @@ are gone; "shard worker death" is `oms-lineage` (or one shard PQ in P3) and reco
 ## 2. Alerting
 
 All alerts derive from `trace_stats` and `unresolved_links`/`drift_edges` in `oms-lineage`,
-evaluated by a `TableListener` that posts to `OMS_TRACE_ALERT_URL` (and writes the alert as a
-row in `break_events` so it lands in `DriftEvents`). Defaults; tune after the first week.
+evaluated by a `TableListener`. Each crossing becomes **a row in the `alerts` table and one HTTP
+POST to `OMS_TRACE_ALERT_URL`** (Q9: a table plus one HTTP sink); the row is also emitted on
+`break_events` so it lands in `DriftEvents`. A failed POST is recorded in `alerts.Posted` and
+retried once; the table is the record either way. Defaults; tune after the first week.
 
 | Metric | Source | Warn | Page | Dedupe |
 |---|---|---|---|---|

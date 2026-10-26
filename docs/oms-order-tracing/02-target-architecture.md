@@ -121,7 +121,7 @@ reconciliation PQ are gone; the shard workers are a later phase of the same line
 | `oms-drift-writer` | Live Query - Merge Server PQ running a Derived Table Writer on a Barrage subscription to `break_events` | `OMS_TRACE.DriftEvents` | small | DTW resumes from its checkpoint |
 | `oms-trace-ui` | Live Query (Script) PQ with `deephaven.ui`; Core+ client `barrage_subscribe` to aggregates and a filtered node slice | nothing durable | small–medium | re-subscribes |
 | `oms-merge-raw`, `oms-validate-raw` | Data Merge / Data Validation PQs | historical partitions | n/a | re-runnable |
-| Alert sink | table listener in `oms-lineage` posting threshold crossings | dedupe state (in-memory; durable copy in `DriftEvents`) | — | re-alerts only on new crossings |
+| Alert sink | table listener in `oms-lineage`: every threshold crossing becomes a row in the `alerts` table and one HTTP POST to `OMS_TRACE_ALERT_URL` (Q9: a table plus one HTTP sink) | dedupe state (in-memory; durable copy in `DriftEvents`) | — | re-alerts only on new crossings |
 
 ## 4. Data flow, end to end
 

@@ -109,7 +109,10 @@ is sugar over the same mechanism and the same rules apply.
 - **JVM args**: `-XX:+UseG1GC` (default) is fine; set `-XX:MaxGCPauseMillis=200` if cycle
   time shows GC pauses. No direct-memory setting is needed for Core+ (doc 00 F6).
 - **Python**: the worker image or venv must carry the `oms_trace` package's dependencies (none
-  beyond `deephaven` for the lineage; `deephaven.ui` for the UI PQ).
+  beyond `deephaven` for the lineage; `deephaven.ui` for the UI PQ). Build worker environments
+  from the release's pinned file (`frozen-requirements-2026.01.0xx-42.5.txt` for the 1.202601
+  line: Core+ 2026.01.0xx on Community Core 42.5), never from floating versions; the
+  `deephaven_enterprise` package version must match the cluster build (2026.01.054).
 
 ## 7. Scheduling details
 
