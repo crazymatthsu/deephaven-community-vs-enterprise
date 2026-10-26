@@ -58,6 +58,9 @@ L1 asserts the oracle; L2 asserts the engine equals the oracle. "A(1000/1000)" r
 | `cancel_not_propagated` | A, Bp and Bc1 canceled (leaves 0); Cp1 and one Cc still show 100 open | `LEAVES_MISMATCH` on Bc1 (`Bc-Cp` is 1 : 1); `CHILD_STILL_OPEN` on Cp1 if its leaves are 0 while a Cc is open; root `OverRoutedQty` (AC10) |
 | `leaves_mismatch_cross` | A shows 400 open, its B parent 300 | `LEAVES_MISMATCH` on A (`A-Bp` is 1 : 1), aged |
 | `child_first_in_system` | a Bc arrives 2 s before its Bp (a lagging Kafka partition, Q11; not expected in production per Q7, but the DAG must survive it) | `links_bc UNRESOLVED` for 2 s, then `LINKED`; nothing alerts (A15) |
+| `feed_stale_suppresses` | topic `oms.c.t3` silent for 3 min while its C orders keep executing upstream | the `Bc-Cp` gaps on orders from `t3` are `FEED_STALE`, in `feed_suppressed`, not in `drift_edges`; one `feed_health` row `STALE`; gaps on other C topics unaffected (R17) |
+| `feed_catching_up_then_heals` | the topic resumes and replays 2 h of states in a minute | `CATCHING_UP` while `BehindSec > 300`; the gaps heal as the replay passes each order; at `CURRENT` the remaining gaps age into drift from that moment |
+| `unresolved_not_alerted_while_system_stale` | a Cp whose Bc is missing while all of B's topics are `STALE` | `UNRESOLVED` with `FeedStale = true`, `Alerted = false`; alerted once B is current and the age exceeds the threshold |
 | `exec_dropped_at_c` (P2b) | `missing_at_c` with executions: Bc2 has fills (100, 10.00, T1), (300, 10.01, T2); Cp2 has only the second | aged: `exec_breaks` on `Bc-Cp` for Bc2: key (100, 10.00, T1), `ParentCount 1`, `ChildCount 0`, `EXEC_MISSING_DOWNSTREAM`, `DroppedExecIds = [Bc2's exec id]`, `DroppedQty 100`; `Unexplained 0` (AC9) |
 | `exec_identical_fills_one_dropped` (P2b) | Bc2 has two fills (100, 10.00, T1) with different exec ids; Cp2 has one | one row, `Diff −1`, `DroppedExecIds` lists both, `Ambiguous = true`, `DroppedQty 100` (AC9) |
 | `exec_unbooked_upstream` (P2b) | Cc children have a fill the Cp never booked | `Cp-Cc` on Cp: `EXEC_UNBOOKED_UPSTREAM`, `DroppedExecIds` = the Cc exec id, `ChildOrderIds` names the child |
@@ -85,6 +88,10 @@ starting point.
 7. **Root propagation**: every node with `RootState = RESOLVED` has the `RootId` of the A row reachable by following `LinkId` four times at most; `root_unresolved` is exactly the set of linked nodes with a broken chain above.
 9. **Open-quantity telescoping**: for each fully linked root, `ALeavesQty − StreetLeavesQty == Σ RouteGap == HeldQty − OverRoutedQty` (positive and negative parts summed separately, so a held slice never cancels an over-routed one).
 8. **Execution accounting** (P2b): on every broken parent `ExplainedGap + Unexplained == FillGap`, and `Σ DroppedQty` over `EXEC_MISSING_DOWNSTREAM` rows minus `Σ` over `EXEC_UNBOOKED_UPSTREAM` rows equals `ExplainedGap`.
+
+10. **Feed suppression** (R17): no row of `drift_edges` has a non-current channel on either side;
+    every `FEED_STALE` row has one; `unresolved_links.Alerted` is false whenever the parent system
+    has a non-current channel.
 
 ## 4. Live tests in the embedded engine (L2)
 
@@ -171,6 +178,10 @@ an expected observation.
 8. One trading day at agreed volume, including a replayed close burst at ~240 k msg/s across
    the systems' topics (Q6): heap ≤ 70 %, cycle p99 ≤ 1 s outside the burst and ≤ 5 s inside it
    (AC8, N2); every ingester's lag returns to zero within minutes of the burst.
+9. Stop one C ingester for an hour mid-day while the others run: its topic goes `STALE`, the
+   affected gaps are `FEED_STALE` and nothing pages but the channel alert; restart it: the
+   backlog replays, the topic is `CATCHING_UP` then `CURRENT`, the suppressed gaps heal, and the
+   final tables equal the oracle (Q7, R17).
 
 ## 8. Acceptance mapping
 

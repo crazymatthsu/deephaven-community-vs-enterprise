@@ -114,6 +114,7 @@ maps them onto this contract (doc 04 §1). It is the only code that changes when
 | `OrderQty`, `CumQty`, `LeavesQty` | long | null → `0` (`LeavesQty` is present in all three systems, Q14) |
 | `Status` | String | `OrdStatus`, null → `""` |
 | `RecvTs` | Instant | as raw |
+| `Topic` | String | the drop-copy channel the state came from (Q6, Q7); null → `""` |
 | `Present` | boolean | constant `true`; joined onto children to tell "parent exists" from "parent exists with null columns" |
 
 Role split rule (A11, confirmed): `IS_PARENT = isNull(ParentOrderId)`. Null means parent; any
@@ -140,6 +141,7 @@ of that level.
 | §3 columns | the node |
 | `ParentPresent` | parent `Present` (null when unresolved) |
 | `ParentCumQty`, `ParentSymbol`, `ParentSide`, `ParentStatus`, `ParentRecvTs` | the parent |
+| `ParentSystem` | the parent level's system (`A`, `B`, `B`, `C`), for the feed check on unresolved rows |
 | `ParentState` | `LinkId == `` ? NO_LINK : isNull(ParentPresent) ? UNRESOLVED : LINKED` |
 | `RootId` | `B_PARENT`: `LinkId` (the A id, known even before A arrives); other levels: the parent's `RootId` (null while any hop above is missing) |
 | `RootState` | `isNull(RootId) ? UNRESOLVED : RESOLVED` |
@@ -157,6 +159,8 @@ Parents with the rollup of their direct children. One row per parent node.
 | `ChildCount` | `count` of children with `LinkId = parent OrderId` (null → 0) |
 | `ChildCumQty` | `sum(CumQty)` over direct children (null → 0) |
 | `ChildLastTs` | `max(RecvTs)` over direct children |
+| `ChildTopics` | the distinct channels the direct children came from (a small vector per parent) |
+| `ChildSystem` | the child level's system (`B`, `B`, `C`, `C`) |
 | `FillGap` | `CumQty − ChildCumQty` (long) |
 | `ChildLeavesQty` | `sum(LeavesQty)` over direct children (null → 0) |
 | `RouteGap` | `LeavesQty − ChildLeavesQty` (long): positive = open here and not routed below, negative = more open below than here |
@@ -182,6 +186,9 @@ with the clock (doc 04 §5):
 | `ShortSide` | `FillGap > 0 ? CHILD : PARENT` — which book is short |
 | `MissedBy` | the system whose book is short: `CROSS` edges: `CHILD` → the child level's system, `PARENT` → the parent level's system; `INTERNAL` edges: the system itself (meaningful for the fill kinds) |
 | `OpenAt` | `RouteGap > 0 ? PARENT : RouteGap < 0 ? CHILD : ""` — where the unmatched open quantity sits (meaningful for the route kinds) |
+| `ParentFeed` | the parent's channel state from `feed_health` (`CURRENT` / `STALE` / `CATCHING_UP`) |
+| `ChildSideStale` | any child channel non-current; with no children yet, the child system has any non-current channel |
+| `FeedStale` | `ParentFeed != CURRENT || ChildSideStale` — the gap is suppressed (R17) |
 
 ### 4.5 Outputs
 
@@ -190,6 +197,8 @@ with the clock (doc 04 §5):
 | `drift_edges` | one row per parent with an aged break | `Edge`, `Scope`, `Level`, `System`, `OrderId`, `RootId`, `RootState`, `Symbol`, `Side`, `Status`, `OrderQty`, `CumQty`, `ChildCount`, `ChildCumQty`, `FillGap`, `LeavesQty`, `ChildLeavesQty`, `RouteGap`, `GapAgeSec`, `BreakKind`, `ShortSide`, `MissedBy`, `OpenAt` |
 | `drift_by_a_order` | one row per root with any aged break below it | `RootId`, `Symbol`, `Side`, `ACumQty`, `StreetCumQty` (Σ `C_CHILD` cum under the root), `GapABp`, `SumGapBpBc`, `SumGapBcCp`, `SumGapCpCc`, `MissingAtB = max(GapABp, 0)`, `UnbookedAtA = max(−GapABp, 0)`, `InternalB = SumGapBpBc` (signed), `MissingAtC = max(SumGapBcCp, 0)`, `UnbookedAtB = max(−SumGapBcCp, 0)`, `InternalC = SumGapCpCc` (signed), `ALeavesQty`, `StreetLeavesQty` (Σ `C_CHILD` leaves under the root), `HeldQty = Σ max(RouteGap, 0)`, `OverRoutedQty = Σ max(−RouteGap, 0)` over the root's edges, `Breaks` |
 | `drift_by_symbol` | one row per `Symbol`, `Side`, `Edge` | `Breaks`, `ParentCumQty`, `ChildCumQty`, `MissingDownstream = Σ max(FillGap, 0)`, `UnbookedUpstream = Σ max(−FillGap, 0)`, `OverRouted = Σ max(−RouteGap, 0)` |
+| `feed_health` | one row per system and topic | `System`, `Topic`, `LastRecvTs`, `LastEventTs`, `SilentSec`, `BehindSec`, `TopicState` (`CURRENT` / `STALE` / `CATCHING_UP`) — the channel view the alert sink pages on (one alert per topic, R17) |
+| `feed_suppressed` | gaps with `BreakKind = FEED_STALE` | as `drift_edges`, plus `ParentFeed`, `ChildSideStale` — shown and counted, never paged |
 | `unresolved_links` | one row per node with `ParentState != LINKED` | `Level`, `System`, `OrderId`, `LinkId`, `ParentState`, `Symbol`, `Side`, `CumQty`, `Status`, `UnresolvedSince`, `AgeSec`, `Alerted = AgeSec >= threshold` |
 | `root_unresolved` | nodes `LINKED` but `RootState = UNRESOLVED` | `Level`, `System`, `OrderId`, `LinkId`, `CumQty` — informational; the alert is on the unresolved node above |
 | `alerts` | append-only in the worker (ring-capped), one row per threshold crossing | `Ts`, `Metric` (doc 08 §2 row name), `Key` (system, edge, symbol or node as applicable), `Value`, `Threshold`, `Severity` (`WARN`/`PAGE`), `Message`, `Posted` (HTTP sink result); also written as a `break_events` row so it lands in `DriftEvents` (Q9) |
@@ -225,6 +234,7 @@ drift; amber are structural or informational.
 
 | `BreakKind` | Applies to | Condition | Meaning / attribution | Colour |
 |---|---|---|---|---|
+| `FEED_STALE` | parent | a channel on either side of the edge is `STALE` or `CATCHING_UP` | the comparison is not meaningful yet: a system or channel is down or replaying a backlog (Q7). Shown in `feed_suppressed`, counted in `trace_stats`; the alert is the channel's, not the gap's (R17). Evaluated first | amber |
 | `NO_LINK` | child | `LinkId == ``` on a non-root level | the parent id was never stamped; the node's quantity is unattributable | red |
 | `UNRESOLVED` | child | `LinkId` set, no parent found | parent not arrived (R8) or never will (R9); alert on age | amber → red at alert age |
 | `ROOT_UNRESOLVED` | child | `LINKED` but `RootId` null | a hop above is missing; shown, not alerted here | amber |
@@ -297,6 +307,8 @@ names every candidate, which is the most the key can say.
 | `OMS_TRACE_ONE_TABLE_PER_SYSTEM` | `true` | `true`: one raw table per system (internal partitions); `false`: one per topic, merged in the adapter |
 | `OMS_TRACE_UI_MAX_ROOTS` | `20` | the most roots one dashboard selection expands into a tree (Q2: a root can hold a few hundred B children) |
 | `OMS_TRACE_TZ` | `America/New_York` | `Date` assignment and the daily window |
+| `OMS_TRACE_FEED_STALE_SEC` | `120` | a topic silent for longer is `STALE` (during market hours; a quiet channel needs a producer heartbeat or a longer threshold) |
+| `OMS_TRACE_FEED_CATCHUP_SEC` | `300` | a topic whose newest `EventTs` is further behind now is `CATCHING_UP` (Q12 makes event time comparable) |
 | `OMS_TRACE_AGE_CLOCK` | `recv` | `recv` (receive time) or `event` (tag 60, GMT, Q12) as the clock the gap and unresolved ages are measured against |
 | `OMS_TRACE_EXEC_PX_SCALE` | `1000000` | price precision for the execution match key (1e-6) |
 | `OMS_TRACE_EXEC_TIME_BUCKET_MS` | `1` | transaction-time precision for the execution match key; set from the pre-cutover match-rate report |

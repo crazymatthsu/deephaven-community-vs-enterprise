@@ -14,7 +14,9 @@ four edges.
 
 ## 1. Business goal and topology
 
-Three order management systems form a chain. The firm needs to know, continuously and after
+Three order management systems form a chain: **A** is Raptor (the client-order system), **B** the
+algo server, **C** the order router (Q7); each drop-copies its order states over several channels,
+one Kafka topic per channel (Q6). The firm needs to know, continuously and after
 the fact, whether the executed quantity each system believes in agrees along the chain, and
 when it does not, **which system, and which book inside it, missed which shares**.
 
@@ -54,6 +56,7 @@ reached through its B child.
 | R14 | Survive restarts: every component is a persistent query that recovers from durable state without operator action | §10, §11.7 | doc 07, doc 08 |
 | R15 | Name the **individual executions** that were dropped on a broken edge, not only the edge and the quantity. Execution ids do not survive a hop; **quantity, price and transaction time do** (Q17, answered 2026-10-26), so executions are matched on that key with multiset semantics | §1 ("identify exactly which executions were dropped") | a second data path over execution reports, computed **lazily for broken edges only** (doc 02 §10, doc 04 §10); phase P2b |
 | R16 | Reconcile **open quantity** per edge as well: `RouteGap = LeavesQty − Σ direct children LeavesQty`, so a cancel that did not propagate, an over-routed slice or quantity held at a level is visible next to the executed-quantity gap | Q14 (answered 2026-10-26: `LeavesQty` is available in all three systems) | same rollup, one more sum (doc 03 §4.3, §6); doc 14's `RouteGap` semantics |
+| R17 | A system or drop-copy channel that is **down or replaying a backlog** must not surface as thousands of drift breaks: gaps on either side of a stale or catching-up channel are suppressed as `FEED_STALE` (amber), one alert fires per channel, and the gaps resolve or become drift once the channel is current | Q7 (2026-10-26: an outage lags a system by a few hours) | per-topic feed health in the lineage DAG (doc 03 §4.4, doc 04 §5) |
 
 ## 3. Non-functional requirements
 
@@ -64,7 +67,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | N1 | Volume | **Confirmed (Q1, 2026-10-26): ~100 M orders per day in total across all five levels**, fewest in A, most in C (the order router). With a 2-day window and the daily restart that is ~150 M resident nodes; the design carries 2× as contingency (doc 06 §1.3) |
 | N2 | Detection latency | a gap is visible within one update cycle after both sides' latest states are present; update-graph cycle ≤ 1 s p99 outside bursts, and **≤ 5 s during the close burst of N12** *(proposed; the lineage worker batches rather than drops — measured in the M1 burst replay, doc 09 §5)* |
 | N3 | Aging threshold | a difference becomes drift when neither side has changed for 30 s *(proposed)*; unresolved link alert at 1 h (§11.4) |
-| N4 | Retention | intraday: today plus the longest observed child-before-parent lag rounded up to whole days, minimum 2 days *(proposed)*; historical: 90 days *(proposed)* |
+| N4 | Retention | intraday: today plus the longest cross-system lag rounded up to whole days — **2 days** covers the "few hours" an outage can cost (Q7), overnight included; historical: 90 days *(proposed)* |
 | N5 | Durability | no data loss after the ingester has checkpointed; recovery of any PQ rebuilds its state from DIS storage and Kafka offsets |
 | N6 | Recovery time | lineage PQ cold start over the retained window ≤ 15 min at the N1 volume *(proposed; measured in doc 06 §8)* |
 | N7 | Availability | ingestion PQs auto-restart; lineage PQ auto-restart with error-restart attempts; spares optional for the UI PQ |
@@ -93,6 +96,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | A13 | An execution reported on both sides of a hop has the **same quantity, price and transaction time** on both sides, at the configured precision (price to 1e-6, time to the millisecond); its ids differ. *From Q17, 2026-10-26.* | widen the time bucket, or add an as-of match for the residue (doc 04 §10) |
 | A14 | Busts and corrections reference the execution they cancel or replace by **that system's** exec id (`ExecRefId`), and every system reports them | an unpropagated bust shows as an execution-level break, which is the intended reading; a feed without `ExecRefId` cannot net busts and the match keeps the busted fill on that side |
 | A16 | An order's states are published on **one** topic of its system for its whole life (an order does not move between a system's topics). If it did, `last_by(OrderId)` over the merged topics still keeps the latest arrival, and `SeqNo`/`EventTs` ordering (A8) protects against a stale one | nothing changes in the DAG |
+| A17 | Each system drop-copies over **several channels**; an outage of a system or of one channel stalls the states of the orders on it for up to a few hours, after which the backlog replays at burst rate (Q7). Normal cross-system propagation is seconds. | the 2-day window (N4) and Kafka retention must still cover the longest outage |
 | A15 | Within one system, a parent order is published before its children on the **same topic** and **may be assumed to arrive first** (Q7, Q18). Because the topic is keyed by order id (Q11), Kafka preserves that order per partition only, so this is an assumption, not a guarantee; the design does not depend on it — a child that does arrive first is `UNRESOLVED` for the delay and heals — and the pre-cutover check reports the observed child-first share (expected ≈ 0, doc 09 §6) | nothing changes |
 
 ## 5. Explicitly out of scope
@@ -150,6 +154,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | Root-unresolved | a node linked to its parent whose chain to A is broken higher up |
 | Root | the A order a node descends from |
 | Street | `C_CHILD`: the level whose quantity is the market-facing truth |
+| Feed stale / catching up | a drop-copy channel (topic) that has been silent longer than `FEED_STALE_SEC`, or whose newest event time is more than `FEED_CATCHUP_SEC` behind now while a backlog replays; gaps touching it are suppressed |
 | DIS, Core+, PQ | as in doc 02 §8 |
 
 ## 8. Open questions
@@ -162,7 +167,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | Q4 | Can a parent reference change on cancel/replace? **Answered 2026-10-26: no** — the latest order state carries a root parent id that a replace or cancel does not change | A5 confirmed; the native-id joins of doc 04 §2 need no id-history index; the pre-cutover check still reports references that fail to resolve (AC7) | as answered | — |
 | Q5 | Can any level skip a hop? **Answered 2026-10-26: assume no skipping to start with** | A6; the native-id DAG links each level to exactly one parent level. If a skip appears later, `C_PARENT` gets `A` as a second candidate parent system in the generic path (doc 04 §8) and the production link gains one more `natural_join` | as answered | — |
 | Q6 | Peak and average message rates per system. **Answered 2026-10-26:** a topic peaks at ~10 k msg/s, and a system publishes its latest order states on **several topics** (OMS B: 7–8), so a system bursts at **~80 k msg/s near the close**; ~240 k msg/s fleet-wide if all three burst together | N12; ingestion is one ingester per topic (doc 05 §4.6); the lineage update graph is sized and measured at the burst (doc 06 §2, doc 09 §5) | as answered; average rates still to be measured | — |
-| Q7 | Lag distribution child-before-parent at each hop (p50/p99/max). **In-system hops answered 2026-10-26:** within B and within C the parent arrives before its children (same topic; A15 records the per-partition caveat), so `Bp-Bc` and `Cp-Cc` child-first lag is ≈ 0. **Cross-system hops still open:** how late a B parent trails its A order and a C parent its B child ("seconds to hours" in the source note) sets the `Date` window (N4) | N3, N4, the date window | cross-system p99 1 h, max 1 day until measured | measured from captured samples in M1 |
+| Q7 | Lag distribution child-before-parent at each hop. **Answered 2026-10-26.** In-system: within B and within C the parent arrives before its children (A15). Cross-system: normally seconds; when a system or one of its drop-copy channels goes down, **a few hours**, then a backlog replay | N4 stays at 2 days; the backlog replay is the Q6 burst again (doc 06 §2); gaps during an outage are `FEED_STALE`, not drift (R17) | as answered | — |
 | Q8 | Do busts reduce `CumQty` in all systems, reported as a new state? **Answered 2026-10-26: yes, in all systems** | A3 confirmed; a bust propagates as a transient negative move down the chain and reconciles once every system reports it; a bust reported in one system only is a real gap (`MISSING_DOWNSTREAM` or `UNBOOKED_UPSTREAM`) and, at execution level, an unmatched fill on the other side. Because a bust can land on an order that already looked closed, the closed-order pruning lever keeps terminal orders for a grace period (doc 06 §1.4) | as answered | — |
 | Q9 | Who consumes alerts and how? **Answered 2026-10-26: a table plus one HTTP sink** | every threshold crossing is a row in the `alerts` table (doc 03 §4.5, persisted through `DriftEvents`) and one HTTP POST to `OMS_TRACE_ALERT_URL` (doc 08 §2) | as answered | — |
 | Q10 | Enterprise and Core+ versions in prod. **Answered 2026-10-26: Deephaven Enterprise 2026.01.054** — a build of the **1.202601** release line, whose Core+ workers and clients are versioned `2026.01.0xx` and bundle **Community Core 42.5** (the release ships a `frozen-requirements-2026.01.0xx-42.5.txt` for worker Python environments) | every API name in docs 04–07 is confirmed against that release's documentation and Core+ Python package in M2's first task; `scripts/check_env.sh` asserts the version | as answered | — |

@@ -9,7 +9,7 @@ Phased delivery of docs 02–09, with the module layout, what is reused from the
 
 | Milestone | Deliverables | Exit gate | Depends on |
 |---|---|---|---|
-| **M0 Decisions** | Q1–Q18 are answered except the cross-system half of Q7 (measured in M1); Q19 (numeric ids?) decides the lineage heap; window and thresholds set | doc 01 updated; docs 03/06 numbers replaced where answers differ | OMS teams |
+| **M0 Decisions** | Q1–Q18 are answered; Q19 (numeric ids?) decides the lineage heap; C's fan-out and each topic's normal silence are read off the M1 samples; window and thresholds set | doc 01 updated; docs 03/06 numbers replaced where answers differ | OMS teams |
 | **M1 Community prototype** | `oms_trace` package: `config`, `adapters`, `dag`, `reference`, `mockdata`, `app`; L1 + L2 tests; Community compose with mock and file sources on `deephaven/server:42.5` and `deephaven-server==42.5` (the engine Enterprise 1.202601 bundles, Q10; the fix42 modules are on 42.4 and move up with it); the 1 M-row sizing run | AC1–AC4 against the oracle; doc 06 §1.3 filled with measured bytes; `trace_check` run on a captured sample (AC7 dry run) | M0 (can start on defaults) |
 | **M2 Enterprise ingest and lineage** | `OMS_RAW` schemas, DIS routing, `ingest.py`, `lineage.py` as PQs on dev-enterprise; Git repo wired to the controller; nightly merge/validation | L4 steps 1–3, 5, 6 on dev-enterprise | M1, platform access |
 | **M3 Outputs** | `break_events` listener, `drift_writer`, `OMS_TRACE` schemas, EOD summary, `ui.py` dashboard, alert sink, ACLs | L4 step 4, 7; desks sign off on `MissedBy` attribution on real UAT data (R5) | M2 |
@@ -100,6 +100,7 @@ and the version-sensitive surface is one file (doc 07 §10).
 | Desks disagree with attribution semantics (`MissedBy`) | rework of doc 03 §6 | M3 sign-off on real data before M4 |
 | Barrage subscription of a large table from the UI | lineage worker pauses | doc 07 §4 rule; UI subscribes to slices only; code review checks subscribed tables' sizes |
 | `TransactTime` jitter across hops larger than the bucket | execution rows fail to pair; `Unexplained` noise | the match-rate report sets the bucket before cutover; an as-of residue match is the designed follow-up (doc 04 §10) |
+| A quiet drop-copy channel looks `STALE` and suppresses real drift | missed breaks on that channel | the M1 sample report lists each topic's longest normal silence; set `FEED_STALE_SEC` above it or ask the producer for a heartbeat (doc 08 R8) |
 | The close burst (~240 k msg/s fleet-wide, Q6) stretches the lineage update-graph cycle past N2 | stale view for seconds at the close | measured in M1's burst replay; persisted lastBy in the ingesters first, edge families second (doc 06 §2) |
 | The 2026.01.054 Kafka ingester cannot write per-topic internal partitions of one table | one table per topic, more merge/validation PQs | fallback layout is designed (doc 05 §4.3b) and switchable by one flag; confirm in M2's first task |
 | `where_in` re-filter cost on intraday execution tables at peak break rates | lineage cycle time | measured in M3b; the execution path moves to its own PQ if it approaches a column scan (doc 06 §1.5) |

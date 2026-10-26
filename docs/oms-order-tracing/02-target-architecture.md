@@ -139,8 +139,11 @@ reconciliation PQ are gone; the shard workers are a later phase of the same line
 4. **Roll up and gap.** On each edge, children are summed by their parent id and joined back:
    `FillGap = CumQty − ChildCumQty` and, since every system reports open quantity (Q14),
    `RouteGap = LeavesQty − ChildLeavesQty`. The 1 : 1 edges also check `ChildCount` (R4, R13, R16).
-5. **Age.** Only rows with a gap or without a parent join a slow clock; a row is `TRANSIENT`
-   until neither side has moved for the aging threshold (R6).
+5. **Age, and check the feeds.** Only rows with a gap or without a parent join a slow clock; a
+   row is `TRANSIENT` until neither side has moved for the aging threshold (R6). Per topic, the
+   newest receive and event times give a channel state — `CURRENT`, `STALE` (silent) or
+   `CATCHING_UP` (replaying a backlog, Q7) — and a gap with a non-current channel on either side
+   is `FEED_STALE`: shown, counted, never paged as drift (R17).
 6. **Aggregate.** `drift_by_a_order` (per root, one column per edge), `drift_by_symbol`,
    `unresolved_links`, `trace_stats` (R7, R9).
 6b. **Name the executions (P2b).** For each parent with an aged gap, the parent's execution
@@ -226,6 +229,7 @@ Query, a managed long-running worker.
 | D12 | Open quantity reconciled per edge too (`RouteGap`): `HELD` amber on in-system edges, `OVER_ROUTED` / `CHILD_STILL_OPEN` red, `LEAVES_MISMATCH` red on the 1 : 1 edges (Q14 answered 2026-10-26) | executed quantity only | 03 §6, 04 §3 |
 | D13 | One topic and one raw table per system, parents and children split by `ParentOrderId` (Q18); parent-before-child arrival is assumed within a system (Q7) but, with topics keyed by order id (Q11), holds per partition only, so the design does not rely on it | two topics / two tables per system | 03 §2, 05 §4 |
 | D14 | Aging clock configurable: receive time by default, event time (GMT tag 60, comparable across systems, Q12) as an option; the execution match key always uses event time | event time only (a republished old report would age instantly) | 03 §7 |
+| D15 | Per-channel feed health in the lineage DAG: a stale or catching-up topic suppresses the gaps it touches as `FEED_STALE` with one alert per topic (Q7 answered 2026-10-26) | paging on every gap during an outage; suspending the whole view while any feed is down | 03 §4.4, 04 §5, 08 §3 R8 |
 | D11 | Execution-level identification by **multiset match on `(Qty, Px, TransactTime)`**, computed **lazily for parents with an aged gap** (`where_in`), busts netted by `ExecRefId` | matching every execution on every edge (O(executions) heap); matching by exec id (ids do not cross hops, Q17) | 02 §10, 04 §10, 06 §1.5 |
 
 ## 10. Execution-level identification (R15, Q17)

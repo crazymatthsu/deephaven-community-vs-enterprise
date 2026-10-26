@@ -102,6 +102,11 @@ the execution path moves to its own PQ so the lineage update graph never waits o
 - Python runs **nothing per message**; the only Python in the hot path is the `break_events`
   listener, which sees transitions.
 - Ingestion is in separate PQs; parsing never competes with the lineage update graph.
+- An outage's backlog (Q7: a system or channel down for hours) replays at ingester speed and is
+  the same load as the close burst, with one difference: the replayed states are hours old, so the
+  channel is `CATCHING_UP` and its gaps are suppressed until its event time reaches the present
+  (doc 04 §5). The feed-health tables cost one small aggregation per raw table and a vector of
+  distinct channels per parent in the rollups (~50 B per parent, in-system edges only).
 
 ## 3. Phase gates — when to add a tier
 

@@ -24,6 +24,7 @@ Replaces sections 8 and 11.7 of the source document for the design in docs 02–
 | Re-keyed ids (A1/A5 fail) | orphans or mislinks | none | the id-history index (doc 04 §2, generic path) | resolution rate in `trace_stats` drops |
 | Schema drift in a feed (new/renamed field) | rejects rise; or a column reads null | rows rejected until fixed | fix the value spec; replay the partition (R1) | reject rate |
 | Clock skew between OMS and ingesters | none with `OMS_TRACE_AGE_CLOCK=recv`; with `event`, tag 60 is GMT in all three systems (Q12) so skew is not expected — a republished old report would age instantly, which is why `recv` is the default | — | switch the clock back to `recv` | `GapAgeSec` jumps at a feed replay |
+| A system, or one of its drop-copy channels, is down for hours (Q7) | its topic(s) go `STALE`; every gap touching its orders is `FEED_STALE` (amber, in `feed_suppressed`), unresolved children of that system are not alerted; **one alert per topic**. On recovery the backlog replays at burst rate with the topic `CATCHING_UP`; suppression ends when its event time reaches the present, and the gaps heal or age into drift from then | none (Kafka retains the backlog; N4 covers the lag) | nothing on our side: R8 | `feed_health.TopicState != CURRENT` |
 | A cancel or replace does not propagate down a hop | `CHILD_STILL_OPEN` (parent done, a child still working) or `LEAVES_MISMATCH` on a 1 : 1 hop once aged; `OverRoutedQty` on the root | none | it is the finding: the child's system must be told to cancel | `drift_by_symbol.OverRouted`; `CHILD_STILL_OPEN` count |
 | Execution feed lags the order-state feed (or the reverse) in one system | `exec_breaks` briefly shows a key on one side only; `Unexplained` moves while states and executions settle | none | nothing; both are aged by the same quantity gap | only if it persists past the aging threshold |
 | `TransactTime` or price differs across a hop beyond the configured precision | the quantity gap is real but `Unexplained != 0` and the execution rows do not pair up | none | widen `OMS_TRACE_EXEC_TIME_BUCKET_MS` / `PX_SCALE` from the match-rate report; a residue as-of match is the designed follow-up (doc 04 §10) | `exec_breaks_by_edge.Unexplained != 0` aged |
@@ -50,6 +51,7 @@ retried once; the table is the record either way. Defaults; tune after the first
 |---|---|---|---|---|
 | Unresolved links older than the alert age | `unresolved_links.where("Alerted")` count per system | > 0 | > 100 or any older than 4 h | one alert per (System, OrderId) crossing; summary every 15 min while non-zero |
 | C parents versus B children | `trace_stats.CParentsMinusBChildren` | ≠ 0 for > 10 min | < −100 (B children never reaching C) | per crossing |
+| Channel stale or catching up | `feed_health.where("TopicState != `CURRENT`")` | any topic, market hours | any topic `STALE` > 10 min, or `CATCHING_UP` > 1 h | one alert per topic per state change; the suppressed gap count is in the message |
 | Over-routed open quantity | `drift_by_symbol.OverRouted`, `drift_by_a_order.OverRoutedQty` | > 0 for > 5 min | > threshold agreed with the desks (overfill risk) | per root crossing |
 | Unexplained execution residue | `exec_breaks_by_edge.where("Unexplained != 0")` count | > 0 for > 5 min | > 10 % of broken parents (the match precision is wrong for the feed) | per edge |
 | Drift quantity by edge | `trace_stats.MissingDownstreamQty<Edge>`, `UnbookedUpstreamQty<Edge>` | > 0 for > 5 min | > threshold agreed with the desks (Q9) | per edge, re-alert on 2× growth |
@@ -104,6 +106,14 @@ PQ at the next daily restart. Renames and type changes: new table name (doc 07 �
 **R6 — Change the shard count (P3).** Set `OMS_TRACE_SHARD_COUNT` on every shard PQ and the
 collector, restart the shard PQs (they rebuild from `OMS_RAW`), then the collector. No data
 moves.
+
+**R8 — A feed outage.** `feed_health` shows the topic `STALE`; `feed_suppressed` fills with the
+gaps it explains; nothing pages except the channel alert. Confirm with the ingester's Kafka lag
+whether the producer stopped (end offset flat) or we stopped consuming (lag growing): the first
+is the OMS team's, the second is R1's replay or a PQ restart. When the channel resumes, watch
+`BehindSec` fall; `CATCHING_UP` ends when it is under `FEED_CATCHUP_SEC`, and whatever stays in
+`drift_edges` afterwards is real. Do not raise `FEED_STALE_SEC` to silence a quiet channel; ask
+the producer for a heartbeat.
 
 **R7 — Acknowledge a known break.** Until the persisted input table of doc 05 §8.3 exists:
 record the acknowledgement in the desk's tracker; the row stays in `drift_edges` by design.

@@ -66,6 +66,7 @@ def canon(level: str, system: str, link: str | None):
         "LeavesQty = isNull(LeavesQty) ? 0L : LeavesQty",
         "Status = isNull(OrdStatus) ? `` : OrdStatus",
         "RecvTs",
+        "Topic = isNull(Topic) ? `` : Topic",            # the drop-copy channel, for the feed check (Q7)
         # the aging clock: receive time by default; event time (tag 60, GMT, Q12) when OMS_TRACE_AGE_CLOCK=event
         "AgeTs = " + ("EventTs" if os.environ.get("OMS_TRACE_AGE_CLOCK", "recv") == "event" else "RecvTs"),
         "Present = true",
@@ -104,17 +105,17 @@ STATE_COLS = [
     "UnresolvedSince = ParentState == `UNRESOLVED` ? RecvTs : null",
 ]
 
-def link(children, parents, root_formula: str):
+def link(children, parents, root_formula: str, parent_system: str):
     return (
         children.natural_join(parents, on=["LinkId=OrderId"], joins=PARENT_COLS)
-        .update_view([root_formula] + STATE_COLS)
+        .update_view([root_formula, f"ParentSystem = `{parent_system}`"] + STATE_COLS)
     )
 
 a_root   = a_root.update_view(["RootId = OrderId", "RootState = `RESOLVED`", "ParentState = `ROOT`"])
-links_bp = link(b_parent, a_root,   "RootId = LinkId")        # the A id is known even before A arrives
-links_bc = link(b_child,  links_bp, "RootId = ParentRootId")  # null while the B parent is missing
-links_cp = link(c_parent, links_bc, "RootId = ParentRootId")
-links_cc = link(c_child,  links_cp, "RootId = ParentRootId")
+links_bp = link(b_parent, a_root,   "RootId = LinkId",       "A")   # the A id is known even before A arrives
+links_bc = link(b_child,  links_bp, "RootId = ParentRootId", "B")   # null while the B parent is missing
+links_cp = link(c_parent, links_bc, "RootId = ParentRootId", "B")
+links_cc = link(c_child,  links_cp, "RootId = ParentRootId", "C")
 ```
 
 Four joins resolve every node's root. `natural_join` requires unique keys on the right;
@@ -134,14 +135,15 @@ def children_rollup(children):
     return children.where("LinkId != ``").agg_by(
         [agg.count_("ChildCount"),
          agg.sum_(["ChildCumQty = CumQty", "ChildLeavesQty = LeavesQty"]),
-         agg.max_(["ChildLastTs = AgeTs"])],
+         agg.max_(["ChildLastTs = AgeTs"]),
+         agg.distinct(["ChildTopics = Topic"])],        # the channels the children came from (§5 feed check)
         by=["LinkId"],
     )
 
-def edge(parents, children, name: str, scope: str, expect_one: bool):
+def edge(parents, children, name: str, scope: str, expect_one: bool, child_system: str):
     return (
         parents.natural_join(children_rollup(children), on=["OrderId=LinkId"],
-                             joins=["ChildCount", "ChildCumQty", "ChildLeavesQty", "ChildLastTs"])
+                             joins=["ChildCount", "ChildCumQty", "ChildLeavesQty", "ChildLastTs", "ChildTopics"])
         .update_view([
             "ChildCount = isNull(ChildCount) ? 0L : ChildCount",
             "ChildCumQty = isNull(ChildCumQty) ? 0L : ChildCumQty",
@@ -150,13 +152,14 @@ def edge(parents, children, name: str, scope: str, expect_one: bool):
             "RouteGap = LeavesQty - ChildLeavesQty",        # open quantity, Q14 (doc 14's RouteGap)
             "LastChangeTs = isNull(ChildLastTs) || epochNanos(AgeTs) > epochNanos(ChildLastTs) ? AgeTs : ChildLastTs",
             f"Edge = `{name}`", f"Scope = `{scope}`", f"ExpectOne = {'true' if expect_one else 'false'}",
+            f"ChildSystem = `{child_system}`",
         ])
     )
 
-edge_a_bp  = edge(a_root,   links_bp, "A-Bp",  "CROSS",    True)
-edge_bp_bc = edge(links_bp, links_bc, "Bp-Bc", "INTERNAL", False)
-edge_bc_cp = edge(links_bc, links_cp, "Bc-Cp", "CROSS",    True)
-edge_cp_cc = edge(links_cp, links_cc, "Cp-Cc", "INTERNAL", False)
+edge_a_bp  = edge(a_root,   links_bp, "A-Bp",  "CROSS",    True,  "B")
+edge_bp_bc = edge(links_bp, links_bc, "Bp-Bc", "INTERNAL", False, "B")
+edge_bc_cp = edge(links_bc, links_cp, "Bc-Cp", "CROSS",    True,  "C")
+edge_cp_cc = edge(links_cp, links_cc, "Cp-Cc", "INTERNAL", False, "C")
 ```
 
 Only **direct** children are summed. Comparing A with Σ `C_CHILD` would count every
@@ -189,17 +192,55 @@ lag at any hop (Q7); the default `2` covers an overnight lag.
 # A slow clock, one row, re-ticks every OMS_TRACE_CLOCK_SEC seconds.
 clock = time_table(f"PT{CLOCK}S").view(["Now = Timestamp"]).last_by()
 
+# Feed health per drop-copy channel (topic): when it last spoke, and how far behind the market
+# its newest state is (Q7: a system or channel outage stalls its orders for hours, then replays;
+# Q12: EventTs is GMT and comparable). One row per topic; cheap.
+STALE_SEC   = int(os.environ.get("OMS_TRACE_FEED_STALE_SEC", "120"))
+CATCHUP_SEC = int(os.environ.get("OMS_TRACE_FEED_CATCHUP_SEC", "300"))
+
+def topic_health(system: str):
+    return (
+        raw("Orders", system).agg_by([agg.max_(["LastRecvTs = RecvTs", "LastEventTs = EventTs"])], by=["Topic"])
+        .natural_join(clock, on=[], joins=["Now"])
+        .update_view([
+            f"System = `{system}`",
+            "SilentSec = diffNanos(LastRecvTs, Now) / SECOND",     # nothing received for this long
+            "BehindSec = diffNanos(LastEventTs, Now) / SECOND",    # the newest state is this old in market time
+            f"TopicState = SilentSec > {STALE_SEC} ? `STALE` : (BehindSec > {CATCHUP_SEC} ? `CATCHING_UP` : `CURRENT`)",
+            "StaleInt = TopicState == `CURRENT` ? 0 : 1",
+        ])
+    )
+
+feed_health = merge([topic_health("A"), topic_health("B"), topic_health("C")])
+system_health = feed_health.agg_by([agg.max_(["SystemStaleInt = StaleInt"])], by=["System"])
+
 # Age only the candidates: rows with a gap, or a 1:1 edge with the wrong child count.
 # On a quiet book this is a few thousand rows, not the whole table.
 candidates = merge([edge_a_bp, edge_bp_bc, edge_bc_cp, edge_cp_cc]).where(
     "FillGap != 0 || RouteGap != 0 || (ExpectOne && ChildCount != 1)"
 )
+# Is a channel on the children's side of a candidate edge stale or catching up? Evaluated on the
+# candidates only (a few thousand rows), never on the whole book.
+child_feed = (
+    candidates.view(["Edge", "OrderId", "ChildSystem", "ChildTopics"]).ungroup(["ChildTopics"])
+    .natural_join(feed_health, on=["ChildSystem=System", "ChildTopics=Topic"], joins=["ChildFeedInt = StaleInt"])
+    .agg_by([agg.max_(["ChildFeedStaleInt = ChildFeedInt"])], by=["Edge", "OrderId"])
+)
 gaps = (
     candidates
     .natural_join(clock, on=[], joins=["Now"])          # zero-key join onto the single clock row
+    .natural_join(feed_health, on=["System", "Topic"], joins=["ParentFeed = TopicState"])
+    .natural_join(child_feed, on=["Edge", "OrderId"], joins=["ChildFeedStaleInt"])
+    .natural_join(system_health, on=["ChildSystem=System"], joins=["ChildSystemStaleInt"])
     .update_view([
         "GapAgeSec = diffNanos(LastChangeTs, Now) / SECOND",
-        f"BreakKind = CumQty > OrderQty ? `OVERFILL`"
+        # no children yet: judge the child side by its whole system; otherwise by the children's own channels
+        "ChildSideStale = ChildCount == 0 ? (!isNull(ChildSystemStaleInt) && ChildSystemStaleInt > 0)"
+        " : (!isNull(ChildFeedStaleInt) && ChildFeedStaleInt > 0)",
+        "FeedStale = (!isNull(ParentFeed) && ParentFeed != `CURRENT`) || ChildSideStale",
+        # a stale or replaying channel on either side makes the comparison meaningless for now (R17)
+        f"BreakKind = FeedStale ? `FEED_STALE`"
+        f" : CumQty > OrderQty ? `OVERFILL`"
         f" : GapAgeSec < {AGE_SEC} ? `TRANSIENT`"
         f" : (ExpectOne && ChildCount > 1) ? `CARDINALITY`"
         f" : (ExpectOne && ChildCount == 0 && CumQty == 0) ? `MISSING_CHILD`"
@@ -213,7 +254,7 @@ gaps = (
         # CROSS edges: the short book belongs to the other system; INTERNAL: to this one.
         "MissedBy = Scope == `INTERNAL` ? System"
         " : (FillGap > 0 ? (Edge == `A-Bp` ? `B` : `C`) : (Edge == `A-Bp` ? `A` : `B`))",
-        "IsDrift = BreakKind != `TRANSIENT` && BreakKind != `MISSING_CHILD` && BreakKind != `HELD` && BreakKind != `NONE`",
+        "IsDrift = BreakKind != `FEED_STALE` && BreakKind != `TRANSIENT` && BreakKind != `MISSING_CHILD` && BreakKind != `HELD` && BreakKind != `NONE`",
     ])
 )
 
@@ -221,8 +262,12 @@ all_links = merge([links_bp, links_bc, links_cp, links_cc])
 unresolved_links = (
     all_links.where("ParentState != `LINKED`")
     .natural_join(clock, on=[], joins=["Now"])
-    .update_view(["AgeSec = diffNanos(AgeTs, Now) / SECOND", f"Alerted = AgeSec >= {UNRES_SEC}"])
+    .natural_join(system_health, on=["ParentSystem=System"], joins=["ParentSystemStaleInt"])   # the missing parent's system
+    .update_view(["AgeSec = diffNanos(AgeTs, Now) / SECOND",
+                  "FeedStale = !isNull(ParentSystemStaleInt) && ParentSystemStaleInt > 0",
+                  f"Alerted = !FeedStale && AgeSec >= {UNRES_SEC}"])
 )
+feed_suppressed = gaps.where("BreakKind == `FEED_STALE`")     # shown and counted, never paged
 root_unresolved = all_links.where("ParentState == `LINKED` && RootState == `UNRESOLVED`")
 ```
 
@@ -230,6 +275,15 @@ root_unresolved = all_links.where("ParentState == `LINKED` && RootState == `UNRE
   if the installed engine version rejects `on=[]`, `snapshot_when(clock)` on the candidate
   table gives the same effect at a slightly higher cost.
 - The clock period bounds how late a gap is *declared* drift, not how fast it is detected.
+- **Feed health** (Q7, R17). A channel that has been silent for `FEED_STALE_SEC` is `STALE`; one
+  that speaks but whose newest event time is `FEED_CATCHUP_SEC` behind now is `CATCHING_UP` (the
+  backlog of an outage replaying). A gap with a non-current channel on either side is
+  `FEED_STALE`: it sits in `feed_suppressed`, counts in `trace_stats`, and the alert sink pages
+  once for the channel, not for each gap. When the channel is current again the gaps heal in the
+  same cycle or become drift on their own merits. An unresolved child whose parent's *system* has
+  a non-current channel is likewise not alerted. A legitimately quiet channel (few orders) needs a
+  producer heartbeat or a longer `FEED_STALE_SEC`; the pre-cutover report shows each topic's
+  longest silence on a normal day.
 - A gap closes when either side moves; the row leaves `gaps` and `break_events` records the
   `→ NONE` transition.
 
@@ -547,3 +601,6 @@ Reading the outputs:
    `IsDrift`; a 1 : 1 edge with `RouteGap != 0` is `LEAVES_MISMATCH`, never `HELD`.
 9. With `OMS_TRACE_AGE_CLOCK=event` every age is measured against `EventTs`; with `recv`
    against `RecvTs`; the two agree on the scenario books (which stamp both identically).
+10. While any channel on either side of an edge is `STALE` or `CATCHING_UP`, no gap on that edge
+    is drift and no alert fires except the channel's own; when the channel returns to `CURRENT`
+    the healed gaps vanish and the real ones age into drift from that moment.
