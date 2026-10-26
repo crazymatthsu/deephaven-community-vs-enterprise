@@ -46,15 +46,15 @@ null = parent). Root resolution is four `natural_join`s top-down; every node end
 ```mermaid
 flowchart LR
     subgraph feeds [OMS feeds]
-        KA[(Kafka: oms.a.orders)]
-        KB[(Kafka: oms.b.orders<br/>parents + children)]
-        KC[(Kafka: oms.c.orders<br/>parents + children)]
+        KA[(Kafka: oms.a.* topics)]
+        KB[(Kafka: oms.b.* topics, up to 8<br/>parents + children, ~80k msg/s burst)]
+        KC[(Kafka: oms.c.* topics<br/>parents + children)]
     end
 
     subgraph ingest [Ingestion PQs - merge dispatcher]
-        IA[oms-ingest-a<br/>Core+ Kafka ingester<br/>in-worker DIS]
-        IB[oms-ingest-b]
-        IC[oms-ingest-c]
+        IA[oms-ingest-a-*<br/>one Core+ Kafka ingester per topic<br/>in-worker DIS]
+        IB[oms-ingest-b-* x8]
+        IC[oms-ingest-c-*]
     end
 
     KA --> IA
@@ -113,8 +113,8 @@ reconciliation PQ are gone; the shard workers are a later phase of the same line
 
 | Component | Enterprise mechanism | State it owns | Heap class | Restart behaviour |
 |---|---|---|---|---|
-| `oms-ingest-a`, `-b`, `-c` | Core+ Kafka ingester in a "Live Query - Merge Server" PQ; in-worker DIS with private storage claiming `OMS_RAW.Orders<X>` | nothing beyond the DIS checkpoint (Kafka offsets, optional lastBy state) | small (2–4 GB; more with a lastBy view) | resumes from the checkpoint offset; exactly-once |
-| `OMS_RAW.OrdersA/B/C` | intraday partitions (`Date`) in DIS storage, served through the Table Data Service; merged nightly | the raw history (R1, R10); B and C hold parents and children | storage | n/a |
+| `oms-ingest-<x>-<topic>` | one Core+ Kafka ingester per topic (Q6: up to 8 per system, ~10 k msg/s each), grouped a few per "Live Query - Merge Server" PQ by measured parse throughput; in-worker DIS with private storage claiming the system's `OMS_RAW` tables | nothing beyond the DIS checkpoint (Kafka offsets, optional lastBy state) | small (2–4 GB per PQ; more with a lastBy view) | resumes from the checkpoint offset; exactly-once |
+| `OMS_RAW.Orders<X>[_<topic>]` | intraday partitions (`Date`) in DIS storage, served through the Table Data Service; merged nightly. One table per system if the release lets each topic's ingester write its own internal partition of it, else one table per topic merged in the adapter (doc 05 §4.6) | the raw history (R1, R10); B and C hold parents and children | storage | n/a |
 | `oms-ingest-<x>-execs` (P2b) | the same ingester mechanism on `oms.<x>.execs` → `OMS_RAW.Execs<X>` (a second `consume` in the system's ingester PQ, or its own PQ) | DIS checkpoint | small | resumes from the checkpoint |
 | `OMS_RAW.ExecsA/B/C` (P2b) | intraday partitions, `OrderId` a grouping column | execution reports (R15); read lazily by `oms-lineage` for broken edges only | storage | n/a |
 | `oms-lineage` | Live Query (Script) PQ, Core+ Python | the lineage DAG (doc 04): last state, role split, four links, four edges, aging, aggregates | sized by doc 06 §1, 64–128 GB at N1 | full recompute from the `Date` window; recovery time N6 |
@@ -125,8 +125,8 @@ reconciliation PQ are gone; the shard workers are a later phase of the same line
 
 ## 4. Data flow, end to end
 
-1. **Ingest.** Each OMS publishes full order states (A2) — B and C for parents and children on
-   one topic (Q18) — to Kafka. The ingester PQ deserializes, rejects malformed records to a
+1. **Ingest.** Each OMS publishes full order states (A2) on several topics (Q6), parents and
+   children together (Q18), each order on one topic for life (A16). The ingester PQ deserializes, rejects malformed records to a
    counted reject log, stamps `RecvTs` and offsets, appends to the current `Date` partition and
    checkpoints (doc 05 §4–5).
 2. **Last state and role split.** `oms-lineage` opens the three live tables over the `Date`

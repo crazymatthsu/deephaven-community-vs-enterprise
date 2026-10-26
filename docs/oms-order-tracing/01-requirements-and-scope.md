@@ -62,7 +62,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | Id | Requirement | Target |
 |---|---|---|
 | N1 | Volume | "~100 M unique orders flowing through the chain" (§1), now read as **nodes across the five levels**. **Unit unknown** — Q1. Design for 100 M resident nodes per retained window as the upper case, ~35 M as the expected case |
-| N2 | Detection latency | a gap is visible within one update cycle after both sides' latest states are present; update-graph cycle ≤ 1 s p99 under peak ingest *(proposed)* |
+| N2 | Detection latency | a gap is visible within one update cycle after both sides' latest states are present; update-graph cycle ≤ 1 s p99 outside bursts, and **≤ 5 s during the close burst of N12** *(proposed; the lineage worker batches rather than drops — measured in the M1 burst replay, doc 09 §5)* |
 | N3 | Aging threshold | a difference becomes drift when neither side has changed for 30 s *(proposed)*; unresolved link alert at 1 h (§11.4) |
 | N4 | Retention | intraday: today plus the longest observed child-before-parent lag rounded up to whole days, minimum 2 days *(proposed)*; historical: 90 days *(proposed)* |
 | N5 | Durability | no data loss after the ingester has checkpointed; recovery of any PQ rebuilds its state from DIS storage and Kafka offsets |
@@ -71,6 +71,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | N8 | Security | raw tables readable by the tracing PQs and ops only; derived tables readable by the consuming desks; writes only from merge-dispatcher workers |
 | N9 | Operability | every threshold and window is configuration; scripts are Git-sourced (sibling doc `git-persistent-query-scripts.md`) |
 | N10 | Portability | the lineage/drift logic is Community-Core table operations and runs unchanged in a Core+ worker; only ingestion and persistence are Enterprise-specific |
+| N12 | Peak ingest | ~10 k msg/s per topic, up to 8 topics per system (Q6): **~80 k msg/s per system, ~240 k msg/s fleet-wide** in the close burst, sustained for minutes. No message is dropped or delayed beyond Kafka; the lineage view may batch (longer update cycles) during the burst, see N2 |
 | N11 | Execution volume | several execution reports per node per level (hundreds of millions of rows per day at the N1 upper case) are **stored on disk and matched only for parents with an aged gap**, so the execution path's heap is proportional to breaks, not to executions (doc 06 §1.5) |
 
 ## 4. Assumptions the design relies on
@@ -82,7 +83,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | A3 | `CumQty` is non-decreasing per order except for busts, which **reduce `CumQty` in all three systems** and are reported as a new full state. *Confirmed 2026-10-26 (Q8).* | — |
 | A4 | Cardinality per §1: `A-Bp` 1 : 1, `Bp-Bc` 1 : n, `Bc-Cp` 1 : 1, `Cp-Cc` 1 : n | the per-edge rule handles any cardinality; the 1 : 1 checks (`CARDINALITY`, `MISSING_CHILD`) become configuration |
 | A5 | A node's parent reference (cross-system or in-system) is **stable** for the life of the order | index every id a parent was ever known by (doc 04 §8, as doc 14 §3 does) |
-| A6 | No level skips a hop (no C parent referencing an A order or a B parent directly) | ordered candidate parents (doc 14 §2) |
+| A6 | No level skips a hop (no C parent referencing an A order or a B parent directly). *Confirmed as the starting assumption 2026-10-26 (Q5).* | ordered candidate parents (doc 14 §2; the generic path of doc 04 §8) — a configuration change, not a redesign |
 | A7 | Symbol and side use one coding across the three systems. *Confirmed 2026-10-26 (Q13).* | — (a mapping in the adapter view, if it ever changes) |
 | A8 | The feeds are Kafka topics keyed by order id; message order within a key is preserved | last-by orders by `SeqNo`/`EventTs` instead of arrival |
 | A9 | Order ids are strings; if all systems use numeric ids, longs are used | sizing changes ~5× (doc 06 §1) |
@@ -91,6 +92,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | A12 | A B child and its C parent are 1 : 1 and the C parent carries the B child's id | if the C parent carries the B *parent's* id instead, the `Bc-Cp` edge becomes `Bp-Cp` (1 : n) and B children are reconciled only inside B |
 | A13 | An execution reported on both sides of a hop has the **same quantity, price and transaction time** on both sides, at the configured precision (price to 1e-6, time to the millisecond); its ids differ. *From Q17, 2026-10-26.* | widen the time bucket, or add an as-of match for the residue (doc 04 §10) |
 | A14 | Busts and corrections reference the execution they cancel or replace by **that system's** exec id (`ExecRefId`), and every system reports them | an unpropagated bust shows as an execution-level break, which is the intended reading; a feed without `ExecRefId` cannot net busts and the match keeps the busted fill on that side |
+| A16 | An order's states are published on **one** topic of its system for its whole life (an order does not move between a system's topics). If it did, `last_by(OrderId)` over the merged topics still keeps the latest arrival, and `SeqNo`/`EventTs` ordering (A8) protects against a stale one | nothing changes in the DAG |
 | A15 | Within one system, a parent order is published before its children on the **same topic** and **may be assumed to arrive first** (Q7, Q18). Because the topic is keyed by order id (Q11), Kafka preserves that order per partition only, so this is an assumption, not a guarantee; the design does not depend on it — a child that does arrive first is `UNRESOLVED` for the delay and heals — and the pre-cutover check reports the observed child-first share (expected ≈ 0, doc 09 §6) | nothing changes |
 
 ## 5. Explicitly out of scope
@@ -158,8 +160,8 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | Q2 | Children per parent at `Bp-Bc` and `Cp-Cc` (typical, max) | rollup cost, UI tree width, the 1 : 1 checks | 1–50 | OMS B / C teams. *Partly answered 2026-10-25: 1 : 1 at the cross-system hops, 1 : n inside B and C* |
 | Q3 | Full state per message including `CumQty`, or deltas/executions? | A2 | full state | feed owners |
 | Q4 | Can a parent reference change on cancel/replace (cross-system or in-system)? | A5 | stable | OMS B / C |
-| Q5 | Can any level skip a hop? | A6 | no | OMS C |
-| Q6 | Peak and average message rates per system | sizing | 50 k msg/s peak total | feed owners |
+| Q5 | Can any level skip a hop? **Answered 2026-10-26: assume no skipping to start with** | A6; the native-id DAG links each level to exactly one parent level. If a skip appears later, `C_PARENT` gets `A` as a second candidate parent system in the generic path (doc 04 §8) and the production link gains one more `natural_join` | as answered | — |
+| Q6 | Peak and average message rates per system. **Answered 2026-10-26:** a topic peaks at ~10 k msg/s, and a system publishes its latest order states on **several topics** (OMS B: 7–8), so a system bursts at **~80 k msg/s near the close**; ~240 k msg/s fleet-wide if all three burst together | N12; ingestion is one ingester per topic (doc 05 §4.6); the lineage update graph is sized and measured at the burst (doc 06 §2, doc 09 §5) | as answered; average rates still to be measured | — |
 | Q7 | Lag distribution child-before-parent at each hop (p50/p99/max). **In-system hops answered 2026-10-26:** within B and within C the parent arrives before its children (same topic; A15 records the per-partition caveat), so `Bp-Bc` and `Cp-Cc` child-first lag is ≈ 0. **Cross-system hops still open:** how late a B parent trails its A order and a C parent its B child ("seconds to hours" in the source note) sets the `Date` window (N4) | N3, N4, the date window | cross-system p99 1 h, max 1 day until measured | measured from captured samples in M1 |
 | Q8 | Do busts reduce `CumQty` in all systems, reported as a new state? **Answered 2026-10-26: yes, in all systems** | A3 confirmed; a bust propagates as a transient negative move down the chain and reconciles once every system reports it; a bust reported in one system only is a real gap (`MISSING_DOWNSTREAM` or `UNBOOKED_UPSTREAM`) and, at execution level, an unmatched fill on the other side. Because a bust can land on an order that already looked closed, the closed-order pruning lever keeps terminal orders for a grace period (doc 06 §1.4) | as answered | — |
 | Q9 | Who consumes alerts and how? **Answered 2026-10-26: a table plus one HTTP sink** | every threshold crossing is a row in the `alerts` table (doc 03 §4.5, persisted through `DriftEvents`) and one HTTP POST to `OMS_TRACE_ALERT_URL` (doc 08 §2) | as answered | — |

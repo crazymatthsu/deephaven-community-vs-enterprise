@@ -91,7 +91,7 @@ from deephaven import dtypes as dt
 SYSTEM = os.environ["OMS_SYSTEM"]                  # A | B | C
 TABLE  = f"Orders{SYSTEM}"
 DIS    = f"oms_ingest_{SYSTEM.lower()}"
-TOPIC  = os.environ.get("OMS_TOPIC", f"oms.{SYSTEM.lower()}.orders")
+TOPICS = os.environ["OMS_TOPICS"].split(",")      # this PQ's share of the system's topics (§4.3b)
 TZ     = os.environ.get("OMS_TRACE_TZ", "America/New_York")
 
 value_def = TableDefinition({
@@ -101,26 +101,28 @@ value_def = TableDefinition({
     "OrdStatus": dt.string, "EventTs": dt.Instant, "SeqNo": dt.long,
 })
 
+ONE_TABLE = os.environ.get("OMS_TRACE_ONE_TABLE_PER_SYSTEM", "true") == "true"
 kafka_props = {
     "bootstrap.servers": os.environ["KAFKA_BOOTSTRAP"],
-    "group.id": f"dh-oms-ingest-{SYSTEM.lower()}",
     # security.*, sasl.* from the environment's secrets, never in the script
 }
 
-opts = kafka_table_writer_options(
-    dis_name=DIS,
-    namespace="OMS_RAW",
-    table_name=TABLE,
-    topic=TOPIC,
-    kafka_properties=kafka_props,
-    key_spec=KeyValueSpec.IGNORE,             # the key is the order id; it is also in the value
-    value_spec=json_spec(value_def),          # or avro_spec(...) with the schema registry
-    partition_func=daily_partition("RecvTs", TZ),   # §4.2: a callable mapping the row's RecvTs to a yyyy-MM-dd string in TZ; or partition_value="2026-10-25"
-    on_reject=OnReject.LOG,                   # §4.4: never TERMINATE in production
-    # last_by=LastByView(["OrderId"]),       # §4.3, optional
-)
 dis = get_dis_by_name(DIS)                    # the DIS from §2; must have private storage
-dis.consume(opts)                             # runs for the life of the PQ
+for topic in TOPICS:                          # one ingester per topic (§4.3b)
+    opts = kafka_table_writer_options(
+        dis_name=DIS,
+        namespace="OMS_RAW",
+        table_name=TABLE if ONE_TABLE else f"{TABLE}_{topic.rsplit('.', 1)[-1]}",   # §4.3b: preferred vs fallback layout
+        topic=topic,
+        kafka_properties={**kafka_props, "group.id": f"dh-oms-ingest-{SYSTEM.lower()}-{topic}"},
+        key_spec=KeyValueSpec.IGNORE,             # the key is the order id; it is also in the value
+        value_spec=json_spec(value_def),          # or avro_spec(...) with the schema registry
+        partition_func=daily_partition("RecvTs", TZ),   # §4.2: a callable mapping the row's RecvTs to a yyyy-MM-dd string in TZ
+        on_reject=OnReject.LOG,                   # §4.1: never TERMINATE in production
+        # internal_partition=topic,              # §4.3b preferred layout, if the release exposes it
+        # last_by=LastByView(["OrderId"]),       # §4.3, optional
+    )
+    dis.consume(opts)                             # each runs for the life of the PQ
 ```
 
 B's and C's parent and child orders arrive on **one topic per system** (Q18) and land in one
@@ -163,12 +165,36 @@ Cost: heap in the ingester proportional to distinct orders in the partition (doc
 one more table the lineage PQ subscribes to or reads. Phase 1 does without it; the gate is in
 doc 06 §3.
 
+### 4.3b Several topics per system (Q6)
+
+A system publishes its latest order states on several topics (OMS B: 7–8), each peaking at
+~10 k msg/s, so a system bursts at ~80 k msg/s near the close. One `kafka_table_writer_options`
++ `dis.consume` serves one topic; the ingester script therefore loops over its `OMS_TOPICS` and
+starts one ingester per topic. Grouping: a few topics per "Live Query - Merge Server" PQ, sized
+from the parse throughput measured in M2 (JSON parsing is the cost; start at ≤ 4 topics, ≤ 40 k
+msg/s per PQ, 4 GB heap) — or one PQ per topic when operational isolation matters more than PQ
+count. Each ingester has its own consumer group and checkpoints independently, so a slow topic
+never holds back the others.
+
+Where the rows land is the one point to confirm on 2026.01.054 before M2 starts:
+
+- **Preferred — one table per system.** Enterprise intraday tables are written as *internal
+  partitions* (one per writer) under the column partition; if the Core+ Kafka ingester lets each
+  topic's ingester name its internal partition, all of a system's topics write `OMS_RAW.Orders<X>`
+  and the lineage reads one table. Check the ingester options and the DIS claims for that
+  release.
+- **Fallback — one table per topic.** `OMS_RAW.Orders<X>_<topic>` with the same schema; the
+  lineage adapter merges the system's tables before `last_by` (`OMS_TRACE_ONE_TABLE_PER_SYSTEM=false`,
+  doc 04 §1). Nightly merge and validation then run per table. The `Topic` column makes the two
+  layouts interchangeable for forensics.
+
 ### 4.4 Execution feeds (P2b)
 
-Each system's execution reports are ingested the same way from `oms.<x>.execs` into
-`OMS_RAW.Execs<X>` (doc 03 §2.1): a second `kafka_table_writer_options` + `dis.consume` in the
-system's ingester PQ (one DIS can serve several tables it claims), or a separate PQ when the
-execution topic alone saturates a worker. The adapter normalizes the feed's execution-type codes
+Each system's execution reports are ingested the same way from its execution topic(s) into
+`OMS_RAW.Execs<X>` (doc 03 §2.1): further `kafka_table_writer_options` + `dis.consume` loops in
+the system's ingester PQs (one DIS can serve several tables it claims), or separate PQs when the
+execution topics alone saturate a worker (they usually carry more messages than the state
+topics). The adapter normalizes the feed's execution-type codes
 to `FILL` / `BUST` / `CORRECT` in the value spec's derived columns, or in the lineage adapter if
 the raw codes are kept. Retention follows the order tables; the lineage PQ reads executions
 only for parents with an aged gap (doc 04 §10), so a day's executions are paged, not resident.

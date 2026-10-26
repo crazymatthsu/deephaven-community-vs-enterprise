@@ -79,7 +79,7 @@ and the version-sensitive surface is one file (doc 07 §10).
 | 4 | Community compose, `app.py`, file/kafka sources, `run_demo.sh` | M | M1 |
 | 5 | Sizing run and doc 06 update | S | M1 |
 | 6 | `trace_check.py` | S | M1 |
-| 7 | Schemas, DIS routing scripts, `ingest.py`, `enterprise.py` (ingester part) | M | M2 |
+| 7 | Schemas, DIS routing scripts, `ingest.py` (one ingester per topic, grouped per PQ; confirm the internal-partition layout on 2026.01.054 first), `enterprise.py` (ingester part) | M | M2 |
 | 8 | `lineage.py` PQ, Git repo config, daily restart schedule, merge/validation PQs | M | M2 |
 | 9 | `events.py`, `drift_writer`, `OMS_TRACE` schemas, EOD summary | M | M3 |
 | 10 | `ui_slice.py`, `dashboard.py`, `ui.py` PQ with Core+ client subscription | L | M3 |
@@ -101,6 +101,8 @@ and the version-sensitive surface is one file (doc 07 §10).
 | Desks disagree with attribution semantics (`MissedBy`) | rework of doc 03 §6 | M3 sign-off on real data before M4 |
 | Barrage subscription of a large table from the UI | lineage worker pauses | doc 07 §4 rule; UI subscribes to slices only; code review checks subscribed tables' sizes |
 | `TransactTime` jitter across hops larger than the bucket | execution rows fail to pair; `Unexplained` noise | the match-rate report sets the bucket before cutover; an as-of residue match is the designed follow-up (doc 04 §10) |
+| The close burst (~240 k msg/s fleet-wide, Q6) stretches the lineage update-graph cycle past N2 | stale view for seconds at the close | measured in M1's burst replay; persisted lastBy in the ingesters first, edge families second (doc 06 §2) |
+| The 2026.01.054 Kafka ingester cannot write per-topic internal partitions of one table | one table per topic, more merge/validation PQs | fallback layout is designed (doc 05 §4.3b) and switchable by one flag; confirm in M2's first task |
 | `where_in` re-filter cost on intraday execution tables at peak break rates | lineage cycle time | measured in M3b; the execution path moves to its own PQ if it approaches a column scan (doc 06 §1.5) |
 
 ## 6. Definition of done

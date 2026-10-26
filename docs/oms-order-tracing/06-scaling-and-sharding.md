@@ -83,8 +83,16 @@ the execution path moves to its own PQ so the lineage update graph never waits o
 
 - A Core+ worker runs one update graph on one thread. Per cycle it recomputes the rows that
   changed: one `C_CHILD` fill touches its link row, one `C_PARENT` rollup, one edge row, the
-  candidate filter and a few aggregate rows. At 50 k msg/s (Q6 default) that is well within the
-  engine's budget; cycle time is the metric, not CPU.
+  candidate filter and a few aggregate rows. The budget is set by the close burst (Q6):
+  ~80 k msg/s per system, ~240 k msg/s fleet-wide. Messages for the same order inside one cycle
+  collapse to one modified row in `last_by`, but at the close most messages are for different
+  orders, so plan for ~240 k modified order rows per second flowing through ~8 operators each:
+  about 2 M row-operations per second on one thread. The engine sustains that, but with little
+  headroom at a 1 s cycle; the worker then batches (longer cycles, a few seconds, no loss), which
+  N2 allows during the burst. The M1 replay at 240 k msg/s (doc 09 §5) turns this estimate into a
+  measured cycle time; if it exceeds N2, the order of responses is: persisted lastBy in the
+  ingesters (removes the three `last_by` passes from this update graph), then the edge families
+  of §4.
 - Start-up (and recovery) is one `last_by` pass per raw table over the window's messages, then
   the four link joins and four rollups: minutes at the upper case (*est.*; measured in M1).
 - Python runs **nothing per message**; the only Python in the hot path is the `break_events`
@@ -98,7 +106,7 @@ the execution path moves to its own PQ so the lineage update graph never waits o
 | G1 heap | steady-state heap > 70 % of allocation after GC, or allocation would exceed the dispatcher's per-worker cap | levers §1.4; then §4 |
 | G2 cycle | update-graph cycle p99 > 1 s (N2) during peak | check for materialized columns and Python in the loop; then §4 |
 | G3 recovery | cold start > N6 (15 min) | persisted lastBy (doc 05 §4.3); then §4 |
-| G4 ingest lag | an ingester's Kafka lag grows during peak | more ingester PQs over partition ranges (§4.6) |
+| G4 ingest lag | an ingester's Kafka lag grows during the close burst | fewer topics per ingester PQ, down to one (§4.6; Q6 makes topics the natural ingestion unit) |
 | G5 UI | the UI PQ's subscriptions exceed a few million rows | narrower slices; never `orders_*` |
 
 The source document's "decide shard count from ingress rate and per-shard CPU" is replaced by
@@ -205,12 +213,13 @@ spine worker holds join state for every node (~40 % of the full worker's heap �
 worker again, just smaller), and every node crosses Barrage once. Choose it only if the
 whole-tree-per-shard property is worth that; the edge families of §4.2 are the default.
 
-### 4.6 Sharding ingestion (only on G4)
+### 4.6 Sharding ingestion (G4)
 
-Ingestion shards are independent of lineage shards. If one ingester cannot keep up with a
-topic, run several ingester PQs over disjoint Kafka partition ranges, each writing its own table
-(`OrdersB_p0`, `OrdersB_p1`, …) because one DIS table has one writer; the adapter `merge`s them.
-Ingestion rarely trips first.
+Ingestion is already parallel by topic (Q6: one ingester per topic, grouped a few per PQ, doc
+05 §4.3b), independently of lineage shards. G4 is answered by regrouping: fewer topics per PQ,
+down to one PQ per topic at ~10 k msg/s each. Splitting a single topic across PQs by Kafka
+partition range is the step after that and needs one table (or internal partition) per PQ; it
+should not be necessary at 10 k msg/s per topic.
 
 ## 5. Comparison with the source design
 

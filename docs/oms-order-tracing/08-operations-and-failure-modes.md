@@ -55,7 +55,7 @@ retried once; the table is the record either way. Defaults; tune after the first
 | Drift quantity by edge | `trace_stats.MissingDownstreamQty<Edge>`, `UnbookedUpstreamQty<Edge>` | > 0 for > 5 min | > threshold agreed with the desks (Q9) | per edge, re-alert on 2× growth |
 | Drift count by symbol | `drift_by_symbol.Breaks` | any new symbol | > 10 symbols | per symbol |
 | Stale system | `now() − max(RecvTs)` per system during market hours | > 60 s | > 5 min | per system |
-| Ingest lag | Kafka consumer lag per ingester | > 30 s | > 5 min | per PQ |
+| Ingest lag | Kafka consumer lag per topic (one ingester each, Q6) | > 30 s | > 5 min | per topic |
 | Reject rate | ingester reject counter | > 0 | > 1 % of messages | per PQ |
 | Update-graph cycle | performance tables | p99 > 1 s | p99 > 5 s | per PQ |
 | Heap | worker heap after GC | > 70 % | > 85 % | per PQ |

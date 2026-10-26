@@ -35,13 +35,21 @@ def date_window(days: int) -> list[str]:
 
 DATES = ", ".join(f"`{d}`" for d in date_window(WINDOW))
 
-def raw(table: str):
-    # Partition filter first: the Date column prunes partitions before any row is read.
-    return db.live_table(RAW_NS, table).where(f"Date in {DATES}")
+def raw_table_names(kind: str, system: str) -> list[str]:
+    """`Orders<X>` (one table, every topic's ingester in its own internal partition) or, in the
+    fallback layout, `Orders<X>_<topic>` per topic from OMS_TOPICS_<X> (doc 05 §4.3b)."""
+    topics = [t for t in os.environ.get(f"OMS_TOPICS_{system}", "").split(",") if t]
+    one_table = os.environ.get("OMS_TRACE_ONE_TABLE_PER_SYSTEM", "true") == "true"
+    return [f"{kind}{system}"] if one_table or not topics else [f"{kind}{system}_{t.rsplit('.', 1)[-1]}" for t in topics]
 
-def last_state(table: str):
-    # One last_by per raw table (B and C hold two levels each): one row per order.
-    return raw(table).last_by(["OrderId"])
+def raw(kind: str, system: str):
+    # Partition filter first: the Date column prunes partitions before any row is read.
+    parts = [db.live_table(RAW_NS, n).where(f"Date in {DATES}") for n in raw_table_names(kind, system)]
+    return parts[0] if len(parts) == 1 else merge(parts)
+
+def last_state(system: str):
+    # One last_by per system over all its topics (B and C hold two levels each): one row per order.
+    return raw("Orders", system).last_by(["OrderId"])
 
 IS_PARENT = f"isNull({PARENT_ID})"     # Q15: null = parent, non-null = child (doc 03 §3)
 
@@ -63,7 +71,7 @@ def canon(level: str, system: str, link: str | None):
         "Present = true",
     ]
 
-a_all, b_all, c_all = last_state("OrdersA"), last_state("OrdersB"), last_state("OrdersC")
+a_all, b_all, c_all = last_state("A"), last_state("B"), last_state("C")
 
 a_root   = a_all.view(canon("A_ROOT", "A", None))
 b_parent = b_all.where(IS_PARENT).view(canon("B_PARENT", "B", "UpstreamRef"))
@@ -74,7 +82,9 @@ c_child  = c_all.where(f"!({IS_PARENT})").view(canon("C_CHILD", "C", PARENT_ID))
 
 Why `last_by` before the split and the `view`: the `view` is lazy and `last_by` only needs the
 key column, so the adapter formulas are evaluated on one row per order rather than one per
-message, and B's and C's two levels cost one pass each.
+message, and B's and C's two levels cost one pass each. A system's several topics (Q6) are one
+input: `last_by` over their union keeps the latest state per order whichever topic carried it
+(A16).
 
 ## 2. Link each level to its parent, top-down, carrying the root
 
@@ -340,7 +350,8 @@ differ:
 from order_tree_recon import config, dag
 
 # parse_topology takes the same dict shape as config.DEFAULT_LEVELS; "parents" lists the
-# systems a level's LinkId may resolve in, first match wins (add "A" after "B" for C_PARENT if Q5 says hops are skipped).
+# systems a level's LinkId may resolve in, first match wins. Q5: no hop is skipped to start with; if one ever
+# is, add "A" after "B" on C_PARENT here and one natural_join in the production link (doc 04 §2).
 topology = config.parse_topology([
     {"name": "A_ROOT",   "system": "A"},
     {"name": "B_PARENT", "system": "B", "parents": ["A"]},
@@ -428,9 +439,9 @@ TIME_MS    = int(os.environ.get("OMS_TRACE_EXEC_TIME_BUCKET_MS", "1"))     # tra
 TIME_NANOS = TIME_MS * 1_000_000
 EXEC_KEY   = ["Qty", "PxKey", "TimeKey"]
 
-def effective_execs(table: str):
+def effective_execs(system: str):
     """Fills, with busted ones removed and corrections standing as the corrected fill."""
-    t = raw(table)
+    t = raw("Execs", system)
     fills = t.where("ExecType == `FILL` || ExecType == `CORRECT`")
     cancels = t.where("ExecType == `BUST` || ExecType == `CORRECT`").view(["OrderId", "ExecRefId"])
     return fills.where_not_in(cancels, cols=["OrderId", "ExecId = ExecRefId"]).view([
@@ -440,7 +451,7 @@ def effective_execs(table: str):
         "RecvTs",
     ])
 
-execs_a, execs_b, execs_c = effective_execs("ExecsA"), effective_execs("ExecsB"), effective_execs("ExecsC")
+execs_a, execs_b, execs_c = effective_execs("A"), effective_execs("B"), effective_execs("C")
 
 def exec_breaks_for(edge_name: str, parent_execs, child_execs, child_links):
     # 1. only the parents with an aged gap on this edge

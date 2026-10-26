@@ -110,7 +110,7 @@ Community server with the doc 04 DAG and record, from the server's own metrics:
 |---|---|
 | heap per order per system | `Runtime` used heap after a forced GC, divided by rows in `orders_*`, with string and with long ids |
 | `last_by` scan rate | wall time of the initial build over N raw rows |
-| cycle time at a replay rate of 50 k msg/s | performance tables |
+| cycle time at a replay of the **close burst**: 80 k msg/s per system, 240 k msg/s fleet-wide for 10 minutes (Q6), on top of a resident book | performance tables; the N2 burst allowance (≤ 5 s) is the pass mark, and the result decides whether persisted lastBy or edge families are needed before go-live (doc 06 §2) |
 | `gaps` candidate count on a healthy book | `gaps.size()` (should be ~0 when quiet) |
 | UI subscription sizes | rows in each subscribed table |
 
@@ -168,7 +168,9 @@ an expected observation.
 6. Data Merge + Validation for D − 1; `db.historical_table` returns the rows; intraday D − 2
    deleted; `DriftEvents` merged.
 7. Malformed record on a UAT topic: rejected and counted; the feed continues.
-8. One trading day at agreed volume: heap ≤ 70 %, cycle p99 ≤ 1 s (AC8).
+8. One trading day at agreed volume, including a replayed close burst at ~240 k msg/s across
+   the systems' topics (Q6): heap ≤ 70 %, cycle p99 ≤ 1 s outside the burst and ≤ 5 s inside it
+   (AC8, N2); every ingester's lag returns to zero within minutes of the burst.
 
 ## 8. Acceptance mapping
 

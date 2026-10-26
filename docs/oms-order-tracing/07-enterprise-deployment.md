@@ -20,7 +20,7 @@ adds what is specific to order tracing.
 
 | PQ | Type | Dispatcher | Schedule | Heap (start) | Restart policy | Depends on | Script (Git path) |
 |---|---|---|---|---|---|---|---|
-| `oms-ingest-a` / `-b` / `-c` | Live Query - Merge Server | merge | Continuous; daily restart 00:05 `OMS_TRACE_TZ` (optional with `partition_func`) | 4 GB (8–16 GB with `LastByView`) | error restart attempts 5, delay 30 s | schemas, DIS `oms_ingest_<x>` | `queries/oms_trace/ingest.py` (`OMS_SYSTEM` env) |
+| `oms-ingest-<x>-<group>` (one PQ per group of ≤ 4 topics; OMS B needs 2–8 PQs for its 7–8 topics, Q6) | Live Query - Merge Server | merge | Continuous; daily restart 00:05 `OMS_TRACE_TZ` (optional with `partition_func`) | 4 GB (8–16 GB with `LastByView`) | error restart attempts 5, delay 30 s | schemas, DIS `oms_ingest_<x>` | `queries/oms_trace/ingest.py` (`OMS_SYSTEM`, `OMS_TOPICS` env) |
 | `oms-ingest-<x>-execs` (P2b) | Live Query - Merge Server | merge | as the order ingesters | 4 GB | as the order ingesters | DIS `oms_ingest_<x>` claiming `OMS_RAW.Execs<X>` | `queries/oms_trace/ingest.py` (`OMS_SYSTEM`, `OMS_FEED=execs`) |
 | `oms-lineage` | Live Query (Script) | query | Continuous; daily restart 00:15 (rolls the `Date` window) | doc 06 §1.3 ÷ 0.7 (e.g. 96 GB expected case, string ids) | error restart attempts 3, delay 60 s; init timeout ≥ 2 × measured N6 | the three ingesters running (Dependent schedule or just "start after") | `queries/oms_trace/lineage.py` |
 | `oms-drift-writer` | Live Query - Merge Server | merge | Continuous; daily restart 00:20 | 4 GB | restart attempts 5 | `oms-lineage` (Dependent), DIS `oms_trace` | `queries/oms_trace/drift_writer.groovy` (or `.py` if the DTW wrapper exists) |
@@ -135,7 +135,9 @@ properties) or `oms_trace.config` defaults.
 | Key | Default | PQs | Meaning |
 |---|---|---|---|
 | `OMS_SYSTEM` | — | ingesters | `A`, `B`, `C` |
-| `OMS_TOPIC` | `oms.<x>.orders` | ingesters | Kafka topic |
+| `OMS_TOPICS` | — | ingesters | this PQ's comma-separated topics (its share of `OMS_TOPICS_<X>`) |
+| `OMS_TOPICS_A` / `_B` / `_C` | — | lineage | every topic per system (doc 03 §8), for the fallback table layout |
+| `OMS_TRACE_ONE_TABLE_PER_SYSTEM` | `true` | ingesters, lineage | `true`: every topic's ingester writes `Orders<X>` (internal partitions); `false`: one table per topic (doc 05 §4.3b) |
 | `KAFKA_BOOTSTRAP` and `KAFKA_*` security props | — | ingesters | from secrets |
 | `OMS_TRACE_TZ` | `America/New_York` | all | `Date` assignment, daily window |
 | `OMS_TRACE_RAW_NAMESPACE` / `OMS_TRACE_OUT_NAMESPACE` | `OMS_RAW` / `OMS_TRACE` | lineage, writer, EOD | |

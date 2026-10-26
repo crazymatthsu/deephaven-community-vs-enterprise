@@ -20,7 +20,11 @@ for in-worker tables.
 
 One row per message as received (append-only within a partition). The same schema for all
 three; `OrdersB` and `OrdersC` hold **both** parent and child orders, told apart by
-`ParentOrderId` (A11, Q15).
+`ParentOrderId` (A11, Q15). A system publishes on several topics (Q6, up to 8). The target is
+one table per system with each topic's ingester writing its own **internal partition**; if the
+installed release's Kafka ingester cannot do that, the fallback is one table per topic
+(`OrdersB_<topic>`) with the same schema, merged in the adapter (doc 05 §4.3b). Either way the
+`Topic` column records provenance.
 
 | Column | Type | Null | Meaning |
 |---|---|---|---|
@@ -38,6 +42,7 @@ three; `OrdersB` and `OrdersC` hold **both** parent and child orders, told apart
 | `EventTs` | Instant | yes | the OMS's event time (FIX tag 60, GMT in all three systems and comparable, Q12) |
 | `RecvTs` | Instant | no | the ingester's receive time; used for aging (Q12) |
 | `SeqNo` | long | yes | a per-order sequence from the feed, if any (A8) |
+| `Topic` | String | no | the source topic (Q6: several per system) |
 | `KafkaPartition` | int | no | provenance |
 | `KafkaOffset` | long | no | provenance |
 
@@ -61,12 +66,13 @@ version's schema reference):
   <Column name="EventTs"        dataType="java.time.Instant"/>
   <Column name="RecvTs"         dataType="java.time.Instant"/>
   <Column name="SeqNo"          dataType="long"/>
+  <Column name="Topic"          dataType="String"/>
   <Column name="KafkaPartition" dataType="int"/>
   <Column name="KafkaOffset"    dataType="long"/>
 </Table>
 ```
 
-Parents and children of B and of C arrive on **one topic per system** (Q18), parents first, and
+Parents and children of B and of C arrive together on each of the system's topics (Q18), parents first, and
 within a system the parent may be assumed to arrive before its children (Q7). The topic is keyed
 by order id (Q11), so Kafka keeps that order per partition only; the design does not depend on it
 either way: a child that arrives first is `UNRESOLVED` until its parent lands (A15).
@@ -285,6 +291,8 @@ names every candidate, which is the most the key can say.
 | `OMS_TRACE_QTY_TOL` | `0` | tolerance |
 | `OMS_TRACE_EXPECT_ONE_EDGES` | `A-Bp,Bc-Cp` | the 1 : 1 edges (A4) |
 | `OMS_TRACE_PARENT_ID_COLUMN` | `ParentOrderId` | the in-system parent id column (Q15, confirmed) |
+| `OMS_TOPICS_A` / `_B` / `_C` | — | comma-separated topic list per system (Q6); each topic maps to an ingester and, in the fallback layout, to a raw table `Orders<X>_<topic>` |
+| `OMS_TRACE_ONE_TABLE_PER_SYSTEM` | `true` | `true`: one raw table per system (internal partitions); `false`: one per topic, merged in the adapter |
 | `OMS_TRACE_TZ` | `America/New_York` | `Date` assignment and the daily window |
 | `OMS_TRACE_AGE_CLOCK` | `recv` | `recv` (receive time) or `event` (tag 60, GMT, Q12) as the clock the gap and unresolved ages are measured against |
 | `OMS_TRACE_EXEC_PX_SCALE` | `1000000` | price precision for the execution match key (1e-6) |
