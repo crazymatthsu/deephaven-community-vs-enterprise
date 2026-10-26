@@ -79,7 +79,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 |---|---|---|
 | A1 | Within one system, `OrderId` is unique across parents and children for the retained window | add a disambiguating column to the key |
 | A2 | Every message carries the order's **full current state**, in particular `CumQty` (a SOW/snapshot style feed), not a delta | a per-system fold is needed before last-by (the fix42 repo's `fix42cache`) |
-| A3 | `CumQty` is non-decreasing per order except for busts, which are reported as a new full state | nothing changes; busts show as a transient negative move |
+| A3 | `CumQty` is non-decreasing per order except for busts, which **reduce `CumQty` in all three systems** and are reported as a new full state. *Confirmed 2026-10-26 (Q8).* | — |
 | A4 | Cardinality per §1: `A-Bp` 1 : 1, `Bp-Bc` 1 : n, `Bc-Cp` 1 : 1, `Cp-Cc` 1 : n | the per-edge rule handles any cardinality; the 1 : 1 checks (`CARDINALITY`, `MISSING_CHILD`) become configuration |
 | A5 | A node's parent reference (cross-system or in-system) is **stable** for the life of the order | index every id a parent was ever known by (doc 04 §8, as doc 14 §3 does) |
 | A6 | No level skips a hop (no C parent referencing an A order or a B parent directly) | ordered candidate parents (doc 14 §2) |
@@ -161,7 +161,7 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | Q5 | Can any level skip a hop? | A6 | no | OMS C |
 | Q6 | Peak and average message rates per system | sizing | 50 k msg/s peak total | feed owners |
 | Q7 | Lag distribution child-before-parent at each hop (p50/p99/max) | N3, N4, the date window | p99 1 h, max 1 day | measured in M1 |
-| Q8 | Do busts reduce `CumQty` in all systems, reported as a new state? | A3 | yes | OMS teams |
+| Q8 | Do busts reduce `CumQty` in all systems, reported as a new state? **Answered 2026-10-26: yes, in all systems** | A3 confirmed; a bust propagates as a transient negative move down the chain and reconciles once every system reports it; a bust reported in one system only is a real gap (`MISSING_DOWNSTREAM` or `UNBOOKED_UPSTREAM`) and, at execution level, an unmatched fill on the other side. Because a bust can land on an order that already looked closed, the closed-order pruning lever keeps terminal orders for a grace period (doc 06 §1.4) | as answered | — |
 | Q9 | Who consumes alerts and how? **Answered 2026-10-26: a table plus one HTTP sink** | every threshold crossing is a row in the `alerts` table (doc 03 §4.5, persisted through `DriftEvents`) and one HTTP POST to `OMS_TRACE_ALERT_URL` (doc 08 §2) | as answered | — |
 | Q10 | Enterprise and Core+ versions in prod. **Answered 2026-10-26: Deephaven Enterprise 2026.01.054** — a build of the **1.202601** release line, whose Core+ workers and clients are versioned `2026.01.0xx` and bundle **Community Core 42.5** (the release ships a `frozen-requirements-2026.01.0xx-42.5.txt` for worker Python environments) | every API name in docs 04–07 is confirmed against that release's documentation and Core+ Python package in M2's first task; `scripts/check_env.sh` asserts the version | as answered | — |
 | Q11 | Are the topics keyed by order id? **Answered 2026-10-26: by order id, not by parent id** | parent-before-child (Q18) holds within a partition only, so in-system child-first arrivals are normal transients (A15); lineage sharding is unaffected (it filters by hash in the worker, doc 06 §4.3) | as answered | — |

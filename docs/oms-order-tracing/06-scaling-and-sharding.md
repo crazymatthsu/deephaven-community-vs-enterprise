@@ -58,8 +58,11 @@ Plus a fixed ~4–8 GB for the JVM, Barrage buffers and Python. The expected cas
 2. **Window**: Q7 decides. If p99 lag at every hop is minutes, a 1-day window halves resident
    state; rows past the window are reported as unresolved, not lost.
 3. **Closed-order pruning**: nodes whose edges reconcile, are terminal and aged can leave the
-   join state (`where_not_in` against a `terminal_ok` table). It trades a late bust on a closed
-   order for heap; only with Q8 answered.
+   join state (`where_not_in` against a `terminal_ok` table). Q8 confirms that a bust arrives as
+   a new state that reduces `CumQty`, possibly on an order that already looked closed, so pruned
+   orders must stay resident for a grace period at least as long as the latest bust lag observed
+   in M1 (start at the end of the trading day: prune only at the daily restart). Heap saved is
+   the fraction of nodes that are terminal and quiet for longer than the grace period.
 4. **Persisted lastBy in the ingesters** (doc 05 §4.3) moves the last-by hash tables out of
    the lineage worker and makes its start-up a subscription instead of a scan.
 
