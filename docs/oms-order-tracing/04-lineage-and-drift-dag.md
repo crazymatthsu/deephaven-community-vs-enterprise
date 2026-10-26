@@ -122,8 +122,10 @@ Four joins resolve every node's root. `natural_join` requires unique keys on the
 join would throw and take the PQ down, so the adapter's `last_by` is also the guard that keeps
 the DAG alive.
 
-If A5 or A6 fail (rotating references, skipped hops), replace the single join per level with
-doc 14's id index and ordered candidate parents (the generic path in §8).
+A5 and A6 are confirmed (Q4: references are replace/cancel-invariant root ids; Q5: no hop is
+skipped), so one `natural_join` per level is the production form. Should either change, doc 14's
+id index and ordered candidate parents (the generic path in §8) replace the single join without
+changing anything downstream.
 
 ## 3. Roll up direct children and compute the edge gap
 

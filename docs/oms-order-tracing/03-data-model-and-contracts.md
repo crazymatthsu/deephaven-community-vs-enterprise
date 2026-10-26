@@ -268,7 +268,9 @@ names every candidate, which is the most the key can say.
 ## 7. Keys, types and null rules
 
 - **Ids stay in their native column type.** Joins use `LinkId = OrderId` per edge; no
-  concatenated `NodeKey` outside `trace_nodes` (D8).
+  concatenated `NodeKey` outside `trace_nodes` (D8). `OrderId` and the parent references are the
+  orders' **root ids**, invariant under cancel/replace (Q4), so one id per node is enough and no
+  id-history index is kept.
 - **Quantities are `long`.** Gaps are exact; `QTY_TOL` exists only for fractional feeds.
 - **Nulls** are removed at the adapter (§3). A null parent column after a join means "no
   parent", never "parent with null value", because `ParentPresent` is checked first.

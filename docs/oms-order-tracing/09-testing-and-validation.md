@@ -49,7 +49,7 @@ L1 asserts the oracle; L2 asserts the engine equals the oracle. "A(1000/1000)" r
 | `bust` | Cc reports 300 then 200 (bust); Cp, Bc, Bp, A follow within 30 s | transient negative gaps climbing the chain, then none; if Bc never follows: `Bc-Cp` on Bc2 `+100 MISSING_DOWNSTREAM` (B says 400, C says 300) |
 | `duplicate_messages` | the same Cc state delivered twice | identical to once |
 | `out_of_order_same_order` | Cc states with `SeqNo` 2 then 1 | last-by on arrival keeps the stale one unless the adapter orders by `SeqNo` (documents the configured mode; A8) |
-| `rekey_c_ref` | a Cp's `UpstreamRef` rotates after a Bc cancel/replace | `UNRESOLVED` in the native-id DAG; `LINKED` in the generic id-history DAG (A5 decides which ships) |
+| `rekey_c_ref` | a Cp's `UpstreamRef` rotates after a Bc cancel/replace (not expected: references are root ids, Q4; robustness only) | `UNRESOLVED` in the native-id DAG, visible in `unresolved_links`; the generic id-history DAG would link it, which is the fallback if the feed ever changes |
 | `midnight` | Bc on `Date` D, Cp on D + 1, window 2 | `LINKED` |
 | `window_exceeded` | Bc on D, Cp on D + 2, window 2 | `UNRESOLVED` on D + 2 (documented limitation; sets Q7) |
 | `large_fanout` | A → Bp → 50 Bc → 50 Cp → 10 Cc each (2 500 Cc rows) | all `NONE`; rollup counts 50, 1 and 10 |

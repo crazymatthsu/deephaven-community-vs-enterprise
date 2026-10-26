@@ -9,7 +9,7 @@ Phased delivery of docs 02–09, with the module layout, what is reused from the
 
 | Milestone | Deliverables | Exit gate | Depends on |
 |---|---|---|---|
-| **M0 Decisions** | answers to doc 01 §8 Q1–Q8 (Q9–Q18 are answered); id type decided (A9); window and thresholds set | doc 01 updated; docs 03/06 numbers replaced where answers differ | OMS teams, business owner |
+| **M0 Decisions** | answers to doc 01 §8 Q1–Q3 and the cross-system half of Q7 (Q4–Q6, Q8–Q18 are answered); id type decided (A9); window and thresholds set | doc 01 updated; docs 03/06 numbers replaced where answers differ | OMS teams, business owner |
 | **M1 Community prototype** | `oms_trace` package: `config`, `adapters`, `dag`, `reference`, `mockdata`, `app`; L1 + L2 tests; Community compose with mock and file sources on `deephaven/server:42.5` and `deephaven-server==42.5` (the engine Enterprise 1.202601 bundles, Q10; the fix42 modules are on 42.4 and move up with it); the 1 M-row sizing run | AC1–AC4 against the oracle; doc 06 §1.3 filled with measured bytes; `trace_check` run on a captured sample (AC7 dry run) | M0 (can start on defaults) |
 | **M2 Enterprise ingest and lineage** | `OMS_RAW` schemas, DIS routing, `ingest.py`, `lineage.py` as PQs on dev-enterprise; Git repo wired to the controller; nightly merge/validation | L4 steps 1–3, 5, 6 on dev-enterprise | M1, platform access |
 | **M3 Outputs** | `break_events` listener, `drift_writer`, `OMS_TRACE` schemas, EOD summary, `ui.py` dashboard, alert sink, ACLs | L4 step 4, 7; desks sign off on `MissedBy` attribution on real UAT data (R5) | M2 |
