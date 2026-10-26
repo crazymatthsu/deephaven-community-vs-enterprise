@@ -583,6 +583,31 @@ Reading the outputs:
   §1.5). `OMS_TRACE_EXEC_SCOPE=all` (every edge, every parent) exists for small deployments
   and is O(executions) heap.
 
+## 10b. Implementation notes (what the engine taught the design)
+
+The implementation in `oms-order-tracing-demo` reproduces this section's tables row for row
+against a pure-python oracle on the scenario book (docs/design/09). Settling that equality fixed
+these points, which the formulas above should be read with:
+
+- **`/` on two longs is a double** in the query language. Every "seconds" column is written
+  `(long) (diffNanos(a, b) / SECOND)` so it truncates toward zero like the oracle.
+- **A system is down only when every channel is down.** `system_health.SystemStaleInt` is the
+  `min` of its channels' `StaleInt`, not the `max`: with eight channels per system, one stale
+  channel must not turn every "no children yet" gap into C and every unresolved child of B into
+  `FEED_STALE`. Edges with children still use the children's own channels.
+- **Open-quantity sums per root skip `TRANSIENT`, `FEED_STALE` and `MISSING_CHILD` rows**, and a
+  root appears in `drift_by_a_order` only when an edge below it is drift; otherwise a transient
+  route gap would create a root row.
+- **`RootId` on a `B_PARENT` is null when its `LinkId` is empty** (`LinkId == `` ? (String) null :
+  LinkId`); a bare `RootId = LinkId` would make a `NO_LINK` parent look root-resolved.
+- **`MISMATCH` is a column on the link rows** (`Mismatch`), listed in `mismatch_links`; the
+  edge taxonomy is evaluated on parent rows only.
+- **`count_by` on an empty table yields no row**, so `trace_stats` is built in long format
+  (`Metric, Key, Value`) with every row anchored on a one-row table and a null-to-zero fill.
+- **The live clock carries a static first row**: `time_table` emits its first row only after one
+  period, and a null `Now` reads every gap as `TRANSIENT` until then.
+- **Joins onto `system_health` rename the column** (`ChildSystemStaleInt = SystemStaleInt`).
+
 ## 11. Checks the implementation must pass (doc 09 details them)
 
 1. AC1–AC4 against the Python reference oracle, row for row, on the scenario catalog.

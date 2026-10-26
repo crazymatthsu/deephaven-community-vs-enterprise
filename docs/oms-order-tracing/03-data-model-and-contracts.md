@@ -143,9 +143,10 @@ of that level.
 | `ParentCumQty`, `ParentSymbol`, `ParentSide`, `ParentStatus`, `ParentRecvTs` | the parent |
 | `ParentSystem` | the parent level's system (`A`, `B`, `B`, `C`), for the feed check on unresolved rows |
 | `ParentState` | `LinkId == `` ? NO_LINK : isNull(ParentPresent) ? UNRESOLVED : LINKED` |
-| `RootId` | `B_PARENT`: `LinkId` (the A id, known even before A arrives); other levels: the parent's `RootId` (null while any hop above is missing) |
+| `RootId` | `B_PARENT`: `LinkId` (the A id, known even before A arrives; null when `LinkId` is empty); other levels: the parent's `RootId` (null while any hop above is missing) |
 | `RootState` | `isNull(RootId) ? UNRESOLVED : RESOLVED` |
 | `UnresolvedSince` | `ParentState == UNRESOLVED ? RecvTs : null` |
+| `Mismatch` | parent present and `Symbol`/`Side` differ from the parent's — the `MISMATCH` kind as a flag; `mismatch_links` lists these rows |
 
 `a_root` carries `RootId = OrderId`, `RootState = RESOLVED`, `ParentState = ROOT`.
 
@@ -195,15 +196,17 @@ with the clock (doc 04 §5):
 | Table | Grain | Columns |
 |---|---|---|
 | `drift_edges` | one row per parent with an aged break | `Edge`, `Scope`, `Level`, `System`, `OrderId`, `RootId`, `RootState`, `Symbol`, `Side`, `Status`, `OrderQty`, `CumQty`, `ChildCount`, `ChildCumQty`, `FillGap`, `LeavesQty`, `ChildLeavesQty`, `RouteGap`, `GapAgeSec`, `BreakKind`, `ShortSide`, `MissedBy`, `OpenAt` |
-| `drift_by_a_order` | one row per root with any aged break below it | `RootId`, `Symbol`, `Side`, `ACumQty`, `StreetCumQty` (Σ `C_CHILD` cum under the root), `GapABp`, `SumGapBpBc`, `SumGapBcCp`, `SumGapCpCc`, `MissingAtB = max(GapABp, 0)`, `UnbookedAtA = max(−GapABp, 0)`, `InternalB = SumGapBpBc` (signed), `MissingAtC = max(SumGapBcCp, 0)`, `UnbookedAtB = max(−SumGapBcCp, 0)`, `InternalC = SumGapCpCc` (signed), `ALeavesQty`, `StreetLeavesQty` (Σ `C_CHILD` leaves under the root), `HeldQty = Σ max(RouteGap, 0)`, `OverRoutedQty = Σ max(−RouteGap, 0)` over the root's edges, `Breaks` |
+| `drift_by_a_order` | one row per root with any aged break below it | `RootId`, `Symbol`, `Side`, `ACumQty`, `StreetCumQty` (Σ `C_CHILD` cum under the root), `GapABp`, `SumGapBpBc`, `SumGapBcCp`, `SumGapCpCc`, `MissingAtB = max(GapABp, 0)`, `UnbookedAtA = max(−GapABp, 0)`, `InternalB = SumGapBpBc` (signed), `MissingAtC = max(SumGapBcCp, 0)`, `UnbookedAtB = max(−SumGapBcCp, 0)`, `InternalC = SumGapCpCc` (signed), `ALeavesQty`, `StreetLeavesQty` (Σ `C_CHILD` leaves under the root), `HeldQty = Σ max(RouteGap, 0)`, `OverRoutedQty = Σ max(−RouteGap, 0)` over the root's aged, feed-current edges (`TRANSIENT`, `FEED_STALE` and `MISSING_CHILD` rows excluded), `Breaks`. A root has a row only when some edge below it is drift (`HELD` alone never makes one) |
 | `drift_by_symbol` | one row per `Symbol`, `Side`, `Edge` | `Breaks`, `ParentCumQty`, `ChildCumQty`, `MissingDownstream = Σ max(FillGap, 0)`, `UnbookedUpstream = Σ max(−FillGap, 0)`, `OverRouted = Σ max(−RouteGap, 0)` |
+| `system_health` | one row per system | `SystemStaleInt = min(StaleInt)` over the system's channels: 1 only when **every** channel is non-current (a system outage); one stale channel out of eight must not mask findings on the other seven |
 | `feed_health` | one row per system and topic | `System`, `Topic`, `LastRecvTs`, `LastEventTs`, `SilentSec`, `BehindSec`, `TopicState` (`CURRENT` / `STALE` / `CATCHING_UP`) — the channel view the alert sink pages on (one alert per topic, R17) |
 | `feed_suppressed` | gaps with `BreakKind = FEED_STALE` | as `drift_edges`, plus `ParentFeed`, `ChildSideStale` — shown and counted, never paged |
 | `unresolved_links` | one row per node with `ParentState != LINKED` | `Level`, `System`, `OrderId`, `LinkId`, `ParentState`, `Symbol`, `Side`, `CumQty`, `Status`, `UnresolvedSince`, `AgeSec`, `Alerted = AgeSec >= threshold` |
+| `mismatch_links` | links with `Mismatch` | the `MISMATCH` rows (a child working another instrument or side than its parent) |
 | `root_unresolved` | nodes `LINKED` but `RootState = UNRESOLVED` | `Level`, `System`, `OrderId`, `LinkId`, `CumQty` — informational; the alert is on the unresolved node above |
 | `alerts` | append-only in the worker (ring-capped), one row per threshold crossing | `Ts`, `Metric` (doc 08 §2 row name), `Key` (system, edge, symbol or node as applicable), `Value`, `Threshold`, `Severity` (`WARN`/`PAGE`), `Message`, `Posted` (HTTP sink result); also written as a `break_events` row so it lands in `DriftEvents` (Q9) |
 | `break_events` | **blink**: one row per node whose `BreakKind` or `ParentState` changed this cycle | `Ts`, `Level`, `System`, `OrderId`, `RootId`, `Edge`, `From`, `To`, `FillGap`, `GapAgeSec` |
-| `trace_stats` | one row | per level: `Nodes`, `Unresolved`, `UnresolvedAlerted`, `MaxUnresolvedAgeSec`, `LastUpdate`; per edge: `Gaps`, `Drift`, `MissingDownstreamQty`, `UnbookedUpstreamQty`; `BChildren`, `CParents`, `CParentsMinusBChildren` (the 1 : 1 check as a count); `WindowDates`; cycle time |
+| `trace_stats` | **long format**: one row per `(Metric, Key)` with a long `Value` | `Nodes` per level, `Unresolved` per child level, `Gaps` / `Drift` / `MissingDownstreamQty` / `UnbookedUpstreamQty` per edge, `CParentsMinusBChildren` (the 1 : 1 check as a count), `TopicStale` per `System:Topic`. Every row exists even when its count is zero (anchored on a one-row table: `count_by` on an empty table yields no row) |
 | `exec_breaks` (P2b) | one row per `Edge`, broken parent and `(Qty, Px, TimeKey)` with a non-zero count difference | `Edge`, `ParentId`, `RootId`, `Qty`, `Px`, `TimeKey`, `ParentCount`, `ChildCount`, `Diff = ChildCount − ParentCount`, `Kind` (`EXEC_MISSING_DOWNSTREAM` when the parent has more, `EXEC_UNBOOKED_UPSTREAM` when the children have more), `DroppedQty = |Diff| × Qty`, `DroppedExecIds` (the exec ids on the side with more), `ChildOrderIds`, `Ambiguous` (k of n identical fills) |
 | `exec_breaks_by_edge` (P2b) | one row per `Edge`, broken parent | `RootId`, `FillGap`, `ExplainedGap = Σ (−Diff × Qty)`, `Unexplained = FillGap − ExplainedGap`, `Keys`, `AmbiguousKeys` |
 | `trace_nodes` | UI only, over a **selection**: one row per node of the selected roots, all five levels | §3 columns + `NodeKey`, `ParentKey`, `RootId`, `Depth`, `FillGap`, `BreakKind` |
