@@ -66,13 +66,13 @@ Values marked *proposed* are defaults to confirm with the business owner (§8).
 | N3 | Aging threshold | a difference becomes drift when neither side has changed for 30 s *(proposed)*; unresolved link alert at 1 h (§11.4) |
 | N4 | Retention | intraday: today plus the longest observed child-before-parent lag rounded up to whole days, minimum 2 days *(proposed)*; historical: 90 days *(proposed)* |
 | N5 | Durability | no data loss after the ingester has checkpointed; recovery of any PQ rebuilds its state from DIS storage and Kafka offsets |
-| N6 | Recovery time | lineage PQ cold start over the retained window ≤ 15 min at the N1 upper case *(proposed; measured in doc 06 §8)* |
+| N6 | Recovery time | lineage PQ cold start over the retained window ≤ 15 min at the N1 volume *(proposed; measured in doc 06 §8)* |
 | N7 | Availability | ingestion PQs auto-restart; lineage PQ auto-restart with error-restart attempts; spares optional for the UI PQ |
 | N8 | Security | raw tables readable by the tracing PQs and ops only; derived tables readable by the consuming desks; writes only from merge-dispatcher workers |
 | N9 | Operability | every threshold and window is configuration; scripts are Git-sourced (sibling doc `git-persistent-query-scripts.md`) |
 | N10 | Portability | the lineage/drift logic is Community-Core table operations and runs unchanged in a Core+ worker; only ingestion and persistence are Enterprise-specific |
 | N12 | Peak ingest | ~10 k msg/s per topic, up to 8 topics per system (Q6): **~80 k msg/s per system, ~240 k msg/s fleet-wide** in the close burst, sustained for minutes. No message is dropped or delayed beyond Kafka; the lineage view may batch (longer update cycles) during the burst, see N2 |
-| N11 | Execution volume | several execution reports per node per level (hundreds of millions of rows per day at the N1 upper case) are **stored on disk and matched only for parents with an aged gap**, so the execution path's heap is proportional to breaks, not to executions (doc 06 §1.5) |
+| N11 | Execution volume | several execution reports per node per level (several hundred million rows per day at the N1 volume) are **stored on disk and matched only for parents with an aged gap**, so the execution path's heap is proportional to breaks, not to executions (doc 06 §1.5) |
 
 ## 4. Assumptions the design relies on
 

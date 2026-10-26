@@ -98,7 +98,7 @@ the execution path moves to its own PQ so the lineage update graph never waits o
   ingesters (removes the three `last_by` passes from this update graph), then the edge families
   of §4.
 - Start-up (and recovery) is one `last_by` pass per raw table over the window's messages, then
-  the four link joins and four rollups: minutes at the upper case (*est.*; measured in M1).
+  the four link joins and four rollups: a few minutes at the confirmed volume (*est.*; measured in M1).
 - Python runs **nothing per message**; the only Python in the hot path is the `break_events`
   listener, which sees transitions.
 - Ingestion is in separate PQs; parsing never competes with the lineage update graph.
@@ -235,7 +235,7 @@ should not be necessary at 10 k msg/s per topic.
 | Out-of-sequence child | buffered, retried every 5 min, flushed on parent | a row state that heals in-cycle |
 | Root attribution | via the mapping table, after the resolver | local for F1/F2; one Barrage hop per level for F3/F4 |
 | Failure modes added | §11.7's five | none beyond PQ restart |
-| Worker count at 100 M nodes | 50–100 workers of 32–64 GB (3–6 TB) | 1 worker of 96–128 GB; sharded upper case: e.g. 4 families × 4 shards of ~24 GB + collector |
+| Worker count at 100 M nodes | 50–100 workers of 32–64 GB (3–6 TB) | 1 worker of 96–128 GB (48–64 GB with long ids); sharded contingency: e.g. 4 families × 4 shards of ~24 GB + collector |
 
 ## 6. Rebalancing and shard count changes
 
