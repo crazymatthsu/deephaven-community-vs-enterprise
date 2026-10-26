@@ -38,18 +38,22 @@ start-up CPU only (one `last_by` pass per raw table).
 
 Five levels do not change the per-node cost: each node is still one last-by key, one parent
 hash entry and one child aggregation entry. What five levels change is the **count** of nodes
-for a given number of client orders: with fan-out *f* at `Bp-Bc` and *g* at `Cp-Cc`, one A
-order is `1 + 1 + f + f + f·g` nodes (f = 10, g = 5: 72 nodes per client order).
+for a given number of client orders: with fan-out *f* at `Bp-Bc` (up to a few hundred, Q2) and
+*g* at `Cp-Cc`, one A order is `1 + 1 + f + f + f·g` nodes. At f = 100 and g = 1 that is ~300
+nodes per client order; at f = 300 and g = 3, ~1 500. Q1's total of ~100 M nodes per day is
+therefore a few hundred thousand A orders and B parents, tens of millions of B children and C
+parents, and the rest in C children (the most, as Q1 says).
 
-### 1.3 Heap at the two readings of "100 M"
+### 1.3 Heap at the confirmed volume
 
 | Case | Nodes in window | String ids | long ids |
 |---|---|---|---|
-| expected (Q1 = 100 M nodes per day across the five levels; 2-day window ≈ 1.5 days resident) | ~150 M | ~54 GB | ~23 GB |
-| upper (100 M nodes per **level** per day) | ~750 M | ~270 GB | ~115 GB |
+| **confirmed** (Q1: ~100 M nodes per day across all systems; 2-day window ≈ 1.5 days resident after the daily restart) | ~150 M | ~54 GB | ~23 GB |
+| contingency (volume doubles) | ~300 M | ~108 GB | ~47 GB |
 
-Plus a fixed ~4–8 GB for the JVM, Barrage buffers and Python. The expected case fits one
-96–128 GB worker with either id type; the upper case fits no single worker and needs §4.
+Plus a fixed ~4–8 GB for the JVM, Barrage buffers and Python. The confirmed case fits **one
+worker**: 96–128 GB with string ids, 48–64 GB with long ids (Q19). The contingency still fits one
+worker with long ids and needs §4 with string ids; §4 is designed, not built, until a gate trips.
 
 ### 1.4 Levers before sharding
 

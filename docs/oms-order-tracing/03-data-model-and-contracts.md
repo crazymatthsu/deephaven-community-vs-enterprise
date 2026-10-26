@@ -295,6 +295,7 @@ names every candidate, which is the most the key can say.
 | `OMS_TRACE_PARENT_ID_COLUMN` | `ParentOrderId` | the in-system parent id column (Q15, confirmed) |
 | `OMS_TOPICS_A` / `_B` / `_C` | — | comma-separated topic list per system (Q6); each topic maps to an ingester and, in the fallback layout, to a raw table `Orders<X>_<topic>` |
 | `OMS_TRACE_ONE_TABLE_PER_SYSTEM` | `true` | `true`: one raw table per system (internal partitions); `false`: one per topic, merged in the adapter |
+| `OMS_TRACE_UI_MAX_ROOTS` | `20` | the most roots one dashboard selection expands into a tree (Q2: a root can hold a few hundred B children) |
 | `OMS_TRACE_TZ` | `America/New_York` | `Date` assignment and the daily window |
 | `OMS_TRACE_AGE_CLOCK` | `recv` | `recv` (receive time) or `event` (tag 60, GMT, Q12) as the clock the gap and unresolved ages are measured against |
 | `OMS_TRACE_EXEC_PX_SCALE` | `1000000` | price precision for the execution match key (1e-6) |

@@ -335,7 +335,10 @@ def lineage_nodes(root_ids):
 ```
 
 `promote_orphans=True` keeps an `UNRESOLVED` node visible at the top of the tree instead of
-vanishing; the synthetic `NodeKey` strings exist only on these few hundred rows (D8). Nodes
+vanishing; the synthetic `NodeKey` strings exist only on the selected rows (D8). One root can
+hold a few hundred B children and their C subtrees (Q2), so a selection is thousands of nodes per
+root: the dashboard caps a selection (default 20 roots, `OMS_TRACE_UI_MAX_ROOTS`) and asks the
+user to narrow a symbol search that exceeds it rather than building a tree of millions. Nodes
 with `RootState = UNRESOLVED` are not in a root's selection by definition; the "any order id"
 search finds them through `all_links` and shows their partial subtree.
 

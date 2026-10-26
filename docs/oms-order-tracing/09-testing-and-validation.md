@@ -52,7 +52,7 @@ L1 asserts the oracle; L2 asserts the engine equals the oracle. "A(1000/1000)" r
 | `rekey_c_ref` | a Cp's `UpstreamRef` rotates after a Bc cancel/replace (not expected: references are root ids, Q4; robustness only) | `UNRESOLVED` in the native-id DAG, visible in `unresolved_links`; the generic id-history DAG would link it, which is the fallback if the feed ever changes |
 | `midnight` | Bc on `Date` D, Cp on D + 1, window 2 | `LINKED` |
 | `window_exceeded` | Bc on D, Cp on D + 2, window 2 | `UNRESOLVED` on D + 2 (documented limitation; sets Q7) |
-| `large_fanout` | A → Bp → 50 Bc → 50 Cp → 10 Cc each (2 500 Cc rows) | all `NONE`; rollup counts 50, 1 and 10 |
+| `large_fanout` | A → Bp → 300 Bc → 300 Cp → 5 Cc each (1 500 Cc rows; Q2: a few hundred children per B parent) | all `NONE`; rollup counts 300, 1 and 5; the UI slice for this root stays under the selection cap |
 | `held` | Bp(1000/300, leaves 700) with Bc children open 500 in total | `HELD` (amber) on Bp with `RouteGap +200`; no drift row; `drift_by_a_order` absent (HELD alone is not drift) |
 | `over_routed` | a Cp with leaves 300 whose Cc children have 400 open | `OVER_ROUTED` on Cp, `RouteGap −100`; root `OverRoutedQty 100` (AC10) |
 | `cancel_not_propagated` | A, Bp and Bc1 canceled (leaves 0); Cp1 and one Cc still show 100 open | `LEAVES_MISMATCH` on Bc1 (`Bc-Cp` is 1 : 1); `CHILD_STILL_OPEN` on Cp1 if its leaves are 0 while a Cc is open; root `OverRoutedQty` (AC10) |
